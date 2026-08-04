@@ -1,0 +1,20 @@
+node_modules/
+data/*.jsonl
+# Runtime secrets and generated state: never commit.
+.env
+.env.*
+!.env.example
+data/cookiecloud.json
+data/cookiecloud.json.bak
+data/rollback-*.txt
+cookies/
+cookies/*.txt
+cookies/*.txt.bak
+cookies/*.txt.bak-*
+cookies/youtube.master.json
+cookies/youtube.source.txt*
+backups/
+dist/
+.DS_Store
+__pycache__/
+*.py[cod]

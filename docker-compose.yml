@@ -1,0 +1,22 @@
+services:
+  onepick-tools:
+    build: .
+    container_name: onepick-tools
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - COOKIE_DIR=/app/cookies
+      - DATA_DIR=/app/data
+      - HISTORY_MAX_LINES=500
+      - NODE_USE_ENV_PROXY=${NODE_USE_ENV_PROXY:-0}
+      - HTTP_PROXY=${HTTP_PROXY:-}
+      - HTTPS_PROXY=${HTTPS_PROXY:-}
+      - NO_PROXY=${NO_PROXY:-localhost,127.0.0.1}
+    volumes:
+      - ./cookies:/app/cookies
+      - ./data:/app/data
+    ports:
+      - "3877:3000"

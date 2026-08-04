@@ -1,0 +1,9 @@
+# Keep build context small and prevent runtime credentials/state from entering images.
+.git
+node_modules
+backups
+dist
+.env
+data
+cookies
+*.log

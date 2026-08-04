@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>OnePick Tools · Config</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg?v=2.4.48" />
+  <link rel="stylesheet" href="/styles.css?v=2.4.48" />
+</head>
+<body>
+  <main class="shell config-shell">
+    <nav class="nav">
+      <a class="brand" href="/"><img class="brand-mark" src="/logo.svg?v=2.4.48" alt="" width="34" height="34" /><span>OnePick Tools</span></a>
+      <div class="nav-links"><a href="/">首页</a><a href="/config#env">环境配置</a></div>
+    </nav>
+
+    <section class="panel glass-card">
+      <p class="eyebrow">Runtime</p>
+      <h1 class="config-title">系统状态</h1>
+      <p class="lead config-lead">查看解析器、Cookie、运行时工具版本和服务状态。</p>
+      <div id="status" class="status-grid"></div>
+    </section>
+
+    <section class="panel glass-card">
+      <p class="eyebrow">Parsers</p>
+      <h2>站点维护</h2>
+      <div id="platforms" class="platform-list"></div>
+    </section>
+  
+    <section class="panel glass-card">
+      <p class="eyebrow">历史记录</p>
+      <div class="section-head">
+        <h2>最近解析记录</h2>
+        <button class="mini-button danger" id="history-clear">清空记录</button>
+      </div>
+      <p class="muted-text" id="history-status"></p>
+      <div id="history" class="history-list"></div>
+    </section>
+  </main>
+  <script src="/config.js?v=2.0.0" type="module"></script>
+</body>
+</html>

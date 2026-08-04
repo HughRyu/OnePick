@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="OnePick">
+  <defs>
+    <linearGradient id="g" x1="28" y1="28" x2="100" y2="100" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#244C9A"/><stop offset=".52" stop-color="#1496A3"/><stop offset="1" stop-color="#8FD34F"/></linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%"><feDropShadow dx="0" dy="3" stdDeviation="3" flood-color="#16352d" flood-opacity=".16"/></filter>
+  </defs>
+  <rect x="0" y="0" width="128" height="128" rx="30" fill="#f5f2e9"/>
+  <g transform="translate(18 16) scale(.72)" filter="url(#shadow)">
+    <path d="M46 28c8-9 21-13 34-10v72c0 11-7 20-18 23l-12 3V48l-20 8 2-12c1-5 7-9 14-16Z" fill="url(#g)"/>
+    <path d="M8 86c21 2 41-2 60-11 22-11 40-28 56-52l7 28c-18 24-40 40-67 49-21 7-41 8-61 4Z" fill="url(#g)"/>
+    <circle cx="96" cy="28" r="13" fill="#8FD34F"/>
+  </g>
+</svg>

@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>OnePick Tools</title>
+  <meta name="description" content="OnePick Tools - 粘贴作品链接，选清晰度，一键解析下载与打包媒体文件。" />
+  <link rel="icon" type="image/svg+xml" href="/favicon.png?v=2.4.61" />
+  <link rel="stylesheet" href="/styles.css?v=2.4.61" />
+</head>
+<body>
+  <main class="shell">
+    <nav class="nav">
+      <a class="brand" href="#parse" aria-label="OnePick Tools">
+        <img class="brand-mark" src="/logo.png?v=2.4.61" alt="" width="34" height="34" />
+        <span>OnePick</span>
+      </a>
+      <div class="nav-links">
+        <button class="tab-link active" type="button" data-view="parse"><span class="nav-ico ico-parse" aria-hidden="true"></span>解析下载</button>
+        <button class="tab-link" type="button" data-view="env"><span class="nav-ico ico-env" aria-hidden="true"></span>环境配置</button>
+        
+        <div class="account-menu" id="account-menu">
+          <button class="account-trigger" id="account-trigger" type="button" aria-expanded="false" aria-controls="account-popover"><span class="nav-ico ico-user" aria-hidden="true"></span>账户/客户端</button>
+          <section class="account-popover" id="account-popover" hidden>
+            <div class="account-head">
+              <span>当前用户</span>
+              <strong id="account-user">加载中</strong>
+            </div>
+            <div class="account-actions">
+              <div class="account-btn-row">
+                <button class="mini-button" id="token-show" type="button">查看 token</button>
+                <button class="mini-button" id="token-copy" type="button">复制 token</button>
+                <button class="mini-button" id="account-edit" type="button">修改账号</button>
+              </div>
+              <div class="token-box inline-token" id="token-box" hidden>
+                <label for="account-token">站点 token</label>
+                <input id="account-token" readonly />
+              </div>
+              <button class="mini-button danger" id="logout-button" type="button">登出</button>
+              <div class="account-divider"></div>
+              <div class="client-head compact">
+                <strong><span class="nav-ico ico-client" aria-hidden="true"></span>客户端</strong>
+                <span>预填本站地址与个人 API</span>
+              </div>
+              <div class="client-popover-grid compact">
+                <div class="client-card">
+                  <div class="client-title-row"><div class="client-card-title">浏览器油猴脚本</div><span class="client-version">当前版本：<code id="userscript-version">v1.40.21</code></span></div>
+                  <p class="muted-text">Edge / Chrome 安装 Tampermonkey 后使用。</p>
+                  <button class="mini-button" id="client-userscript" type="button">安装油猴脚本</button>
+                </div>
+                <div class="client-card">
+                  <div class="client-title-row"><div class="client-card-title">iPhone 快捷指令</div><span class="client-version">当前版本：<code id="shortcut-version">v16</code></span></div>
+                  <p class="muted-text">iOS 分享面板/复制链接调用 OnePick。</p>
+                  <div class="inline-actions">
+                    <button class="mini-button" id="client-shortcut-config" type="button">复制配置</button>
+                    <button class="mini-button" id="client-shortcut" type="button">快捷指令</button>
+                  </div>
+                </div>
+              </div>
+              <p class="muted-text" id="client-status"></p>
+            </div>
+          </section>
+        </div>
+      </div>
+    </nav>
+
+    <!-- 视图 1：解析下载 -->
+    <section id="view-parse" class="view active">
+      <div class="panel workbench-main">
+        <div class="card-action-buttons" hidden>
+          <button class="card-clear-button" id="history-clear" type="button" aria-label="清空记录" title="清空记录"><span class="nav-ico ico-trash" aria-hidden="true"></span></button>
+          <button class="card-history-button" type="button" data-view="history" aria-label="历史记录" title="历史记录"><span class="nav-ico ico-history" aria-hidden="true"></span></button>
+        </div>
+        <div id="main-card-content">
+        <section class="platforms-section">
+          <div class="brand-mantra"><span>Be the one</span></div>
+          <div id="platform-status" class="platform-grid"></div>
+        </section>
+        <form id="parse-form" class="parse-form compose-card">
+          <div class="compose-body">
+            <textarea id="input" name="input" rows="5" placeholder="粘贴作品链接或分享文案，多行自动批量解析…" required></textarea>
+            <div id="result" class="result" hidden title="双击空白处返回输入"></div>
+          </div>
+          <div class="parse-toolbar">
+            <div class="preset-wrap">
+              <span class="toolbar-label">清晰度</span>
+              <div id="preset-panel" class="preset-panel" aria-label="输出预设">
+                <button class="preset-button active" type="button" data-preset="auto" data-mode="video" data-quality="1080" data-cycle="1" aria-pressed="true" title="点击循环切换：最高 → 平衡 → 最低">平衡</button>
+                <button class="preset-button" type="button" data-preset="2160" data-mode="video" data-quality="2160" aria-pressed="false">4K</button>
+                <button class="preset-button" type="button" data-preset="1440" data-mode="video" data-quality="1440" aria-pressed="false">1440</button>
+                <button class="preset-button" type="button" data-preset="1080" data-mode="video" data-quality="1080" aria-pressed="false">1080</button>
+                <button class="preset-button" type="button" data-preset="720" data-mode="video" data-quality="720" aria-pressed="false">720</button>
+                <button class="preset-button" type="button" data-preset="480" data-mode="video" data-quality="480" aria-pressed="false">480</button>
+                <button class="preset-button" type="button" data-preset="360" data-mode="video" data-quality="360" aria-pressed="false">360</button>
+                <button class="preset-button" type="button" data-preset="audio" data-mode="audio" data-quality="best" aria-pressed="false">音频</button>
+              </div>
+            </div>
+            <div class="form-actions">
+              <button class="button ghost" id="inspect-button" type="button">诊断</button>
+              <button class="button primary" type="submit">解析</button>
+            </div>
+          </div>
+        </form>
+        <section id="view-history" class="history-embed" hidden>
+          <div class="section-head">
+            <h2>记录列表</h2>
+          </div>
+          <p class="muted-text" id="history-status"></p>
+          <div id="history" class="history-list"></div>
+        </section>
+        </div>
+      </div>
+    </section>
+
+    <!-- 视图 2：环境配置 -->
+    <section id="view-env" class="view" hidden>
+      <section class="panel status-panel">
+        <div class="section-head">
+          <h2>系统状态</h2>
+
+        </div>
+        <div id="status" class="status-strip"></div>
+        <p class="muted-text" id="counts-reset-status"></p>
+
+      </section>
+
+      <div class="env-two-col">
+        <section class="panel">
+          <h2>代理维护</h2>
+          <div id="proxy-panel" class="cookie-help-panel">
+            <p id="proxy-desc" class="compact-desc">yt-dlp 解析/下载代理；主代理优先，备用代理用于风控冷却期轮询。</p>
+            <div id="proxy-current" class="proxy-current-pill">当前代理：加载中</div>
+            <div class="field-block">
+              <label class="field-label" for="proxy-url">主代理</label>
+              <input id="proxy-url" class="proxy-input full" type="text" autocomplete="off" placeholder="socks5://127.0.0.1:7890" />
+            </div>
+            <div class="field-block">
+              <label class="field-label">备用代理（可多条，风控冷却期轮询）</label>
+              <div id="proxy-backups" class="proxy-backups"></div>
+              <button class="mini-button ghost" id="proxy-add-backup" type="button">+ 添加备用代理</button>
+            </div>
+            <div class="form-actions inline-actions">
+              <button class="mini-button" id="proxy-save" type="button">保存 / 启用</button>
+              <button class="mini-button" id="proxy-test" type="button">检测代理</button>
+              <button class="mini-button danger" id="proxy-delete" type="button">清除全部</button>
+            </div>
+            <p class="muted-text" id="proxy-status"></p>
+            <p class="hint-line">支持 http/https/socks5；清除后恢复直连。</p>
+          </div>
+        </section>
+
+        <section class="panel">
+          <h2>CookieCloud 同步</h2>
+          <div id="cookiecloud-panel" class="cookie-help-panel">
+            
+            <div class="cc-fields">
+              <div class="field-block">
+                <label class="field-label" for="cc-server">服务器地址</label>
+                <input id="cc-server" class="proxy-input full" type="text" autocomplete="off" placeholder="https://cc.example.com" />
+              </div>
+              <div class="field-block">
+                <label class="field-label" for="cc-uuid">用户 KEY / UUID</label>
+                <input id="cc-uuid" class="proxy-input full" type="text" autocomplete="off" placeholder="浏览器扩展里的 UUID" />
+              </div>
+              <div class="field-block">
+                <label class="field-label" for="cc-password">加密密码</label>
+                <input id="cc-password" class="proxy-input full" type="password" autocomplete="new-password" placeholder="端到端加密密码" />
+              </div>
+              <div class="field-block">
+                <label class="field-label" for="cc-interval">定时同步</label>
+                <select id="cc-interval" class="proxy-input full">
+                  <option value="0">关闭（仅手动）</option>
+                  <option value="30">每 30 分钟</option>
+                  <option value="60">每 1 小时</option>
+                  <option value="180">每 3 小时</option>
+                  <option value="360">每 6 小时</option>
+                  <option value="720">每 12 小时</option>
+                  <option value="1440">每 24 小时</option>
+                </select>
+              </div>
+            </div>
+            <div class="form-actions inline-actions">
+              <button class="mini-button" id="cc-save" type="button">保存/启用</button>
+              <button class="mini-button" id="cc-sync" type="button">立即同步</button>
+              <button class="mini-button danger" id="cc-delete" type="button">清除配置</button>
+            </div>
+            <p class="muted-text" id="cc-status"></p>
+          </div>
+        </section>
+      </div>
+
+      <section class="panel platform-maint-panel">
+        <div class="section-head compact">
+          <h2>站点维护</h2>
+          <button class="icon-mini danger" id="counts-reset" type="button" title="清除站点卡片里的下载次数，不清空历史记录" aria-label="清除下载次数">🧹</button>
+        </div>
+        <div id="platforms" class="cookie-platform-grid"></div>
+      </section>
+    </section>
+
+  </main>
+
+  <section class="account-dialog" id="account-dialog" hidden>
+    <form class="account-dialog-card" id="account-form">
+      <div class="cookie-editor-head">
+        <h2>修改用户名/密码</h2>
+        <button class="mini-button" id="account-close" type="button">关闭</button>
+      </div>
+      <label for="account-username">用户名</label>
+      <input id="account-username" name="username" autocomplete="username" required />
+      <label for="account-current-password">当前密码</label>
+      <input id="account-current-password" name="currentPassword" type="password" autocomplete="current-password" required />
+      <label for="account-new-password">新密码</label>
+      <input id="account-new-password" name="newPassword" type="password" autocomplete="new-password" minlength="8" required />
+      <button class="button primary" type="submit">保存并重新登录</button>
+      <p class="muted-text" id="account-form-status"></p>
+    </form>
+  </section>
+  <script src="/app.js?v=2.4.61" type="module"></script>
+</body>
+</html>
