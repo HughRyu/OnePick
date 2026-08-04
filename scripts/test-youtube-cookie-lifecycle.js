@@ -39,6 +39,16 @@ await assert.rejects(
 );
 assert.equal(fs.readFileSync(paths.master, 'utf8'), original, 'failed validation must not replace master');
 
+await assert.rejects(
+  promoteYoutubeCandidate(complete.replace('value-SID', 'stale-SID'), {
+    cookieDir: root,
+    validate: async () => ({ ok: true }),
+    canCommit: () => false
+  }),
+  error => error?.errorClass === 'stale-source'
+);
+assert.equal(fs.readFileSync(paths.master, 'utf8'), original, 'stale source must not replace master after validation');
+
   const promoted = complete.replace('value-SID', 'promoted-SID');
 const promotion = await promoteYoutubeCandidate(promoted, { cookieDir: root, source: 'cookiecloud', validate: async () => ({ ok: true }) });
 assert.equal(fs.readFileSync(paths.master, 'utf8'), promoted, 'valid candidate must be promoted');
@@ -59,7 +69,9 @@ const masterBeforeRuntime = fs.readFileSync(paths.master, 'utf8');
 await withRuntimeCookieArgs('youtube', async () => {
   fs.writeFileSync(paths.master, incomplete, { mode: 0o600 });
 }, { cookieDir: root });
-assert.equal(fs.readFileSync(paths.master, 'utf8'), masterBeforeRuntime, 'runtime callback must not be able to leave master mutated');
+assert.equal(fs.readFileSync(paths.master, 'utf8'), incomplete, 'runtime cleanup must never rewrite the shared master');
+assert.equal(activeYoutubeMasterPath(root), '', 'mutated master must fail verified hash validation');
+fs.writeFileSync(paths.master, masterBeforeRuntime, { mode: 0o600 });
 
 fs.writeFileSync(paths.master, incomplete, { mode: 0o600 });
 assert.equal(activeYoutubeMasterPath(root), '', 'master whose content changes after verification must be rejected');
@@ -84,6 +96,28 @@ await Promise.all([
   withRuntimeCookieArgs('youtube', async (_args, p) => { b = p; }, { cookieDir: root })
 ]);
 assert.notEqual(a, b, 'concurrent requests need independent jars');
+
+const promotionDuringRuntimeRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'onepick-youtube-runtime-promotion-'));
+try {
+  const promotionPaths = youtubeCookiePaths(promotionDuringRuntimeRoot);
+  const initialMaster = complete.replace('value-SID', 'runtime-old-SID');
+  await promoteYoutubeCandidate(initialMaster, { cookieDir: promotionDuringRuntimeRoot, source: 'initial', validate: async () => ({ ok: true }) });
+  const nextMaster = complete.replace('value-SID', 'runtime-new-SID');
+  await withRuntimeCookieArgs('youtube', async () => {
+    await promoteYoutubeCandidate(nextMaster, { cookieDir: promotionDuringRuntimeRoot, source: 'recovery', validate: async () => ({ ok: true }) });
+  }, { cookieDir: promotionDuringRuntimeRoot });
+  assert.equal(fs.readFileSync(promotionPaths.master, 'utf8'), nextMaster, 'an older runtime request must not roll back a newer valid promotion');
+  assert.equal(activeYoutubeMasterPath(promotionDuringRuntimeRoot), promotionPaths.master, 'newly promoted master must remain active after older runtime cleanup');
+
+  const corrupted = complete.replace('value-SID', 'runtime-corrupted-SID');
+  await withRuntimeCookieArgs('youtube', async () => {
+    fs.writeFileSync(promotionPaths.master, corrupted, { mode: 0o600 });
+  }, { cookieDir: promotionDuringRuntimeRoot });
+  assert.equal(fs.readFileSync(promotionPaths.master, 'utf8'), corrupted, 'runtime guard must not write master; unverified mutations are rejected by the verified hash');
+  assert.equal(activeYoutubeMasterPath(promotionDuringRuntimeRoot), '', 'a corrupted master must be rejected instead of being rewritten by request cleanup');
+} finally {
+  fs.rmSync(promotionDuringRuntimeRoot, { recursive: true, force: true });
+}
 
 const concurrentA = complete.replace('\tLOGIN_INFO\tvalue-LOGIN_INFO', '\tLOGIN_INFO\tvalue-a');
 const concurrentB = complete.replace('\tLOGIN_INFO\tvalue-LOGIN_INFO', '\tLOGIN_INFO\tvalue-b');

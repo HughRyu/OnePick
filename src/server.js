@@ -14,11 +14,13 @@ import { pipeline } from 'node:stream/promises';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { parseMedia, listSupportedPlatforms, extractFirstUrl, detectPlatform } from './parsers/index.js';
-import { assertPublicUrl, fetchPublicUrl, getCookieStatus, resolveRedirects, getCookieHeader, assertCookieForDownload, getDownloadCookieRequirementStatus, requiresCookieForDownload, getProxyStatus, getProxyConfig, validateProxyUrl, proxyConfigPath, getProxyArgs, normalizeParsePreferences, PLATFORM_PATTERNS, getPlatformProxyModes, defaultProxyModeForPlatform, shouldUseProxyForPlatform, downloadCookiePlatformForUrl, mediaRequestHeaders, hostMatchesDomain } from './parsers/shared.js';
+import { assertPublicUrl, fetchPublicUrl, getCookieStatus, resolveRedirects, getCookieHeader, assertCookieForDownload, getDownloadCookieRequirementStatus, requiresCookieForDownload, getProxyStatus, getProxyConfig, validateProxyUrl, proxyEndpointKey, mergeProxyBackups, proxyConfigPath, getProxyArgs, planProxyChain, markPrimaryProxyUsed, isProxyFailoverError, normalizeParsePreferences, PLATFORM_PATTERNS, getPlatformProxyModes, defaultProxyModeForPlatform, shouldUseProxyForPlatform, downloadCookiePlatformForUrl, mediaRequestHeaders, hostMatchesDomain } from './parsers/shared.js';
 import { YTDLP_PLATFORMS, ytdlpDownloadExtraArgs } from './parsers/ytdlp-platforms.js';
 import { readCookieCloudConfig, writeCookieCloudConfig, clearCookieCloudConfig, syncCookieCloudToFiles, buildPlatformDomainMap, fetchCookieCloud, appendCookieSyncAudit, readCookieSyncAudit } from './cookiecloud.js';
 import { promoteYoutubeCandidate, withRuntimeCookieArgs, activeYoutubeMasterPath, inspectYoutubeCookieText, youtubeCookiePaths, YOUTUBE_REQUIRED_COOKIE_NAMES } from './youtube-cookie-store.js';
 import { createYoutubeCredentialRecovery, runWithYoutubeCredentialRecovery } from './youtube-credential-recovery.js';
+import { runWithProxyChain, proxyEntryArgs } from './ytdlp-execution.js';
+import { mergeCookieCloudSyncState } from './cookiecloud-state.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1113,22 +1115,35 @@ async function testProxyUrl(url) {
 
 app.post('/api/proxy', (req, res, next) => {
   try {
-    const raw = typeof req.body === 'string' ? req.body : (req.body?.url || '');
-    const url = validateProxyUrl(raw);
-    // 备用代理列表（多代理轮询）：逐个校验，去重、排除与主代理相同的
-    const rawBackups = Array.isArray(req.body?.backups) ? req.body.backups : [];
-    const backups = [];
-    for (const b of rawBackups) {
-      const v = validateProxyUrl(b); // 非法会抛 400
-      if (v && v !== url && !backups.includes(v)) backups.push(v);
-    }
-    const enabled = req.body?.enabled === undefined ? Boolean(url) : Boolean(req.body.enabled);
     const filePath = proxyConfigPath();
     const existing = fs.existsSync(filePath) ? JSON.parse(fs.readFileSync(filePath, 'utf8')) : {};
+    const raw = typeof req.body === 'string' ? req.body : (req.body?.url || '');
+    const url = raw ? validateProxyUrl(raw) : validateProxyUrl(existing.url || '');
+    // Raw proxy values never leave the server. Existing masked entries are
+    // retained/deleted by opaque IDs; additions are the only plaintext values.
+    const backupInputs = Array.isArray(req.body?.backups) ? req.body.backups : [];
+    const keepBackupIds = Array.isArray(req.body?.keepBackupIds) ? req.body.keepBackupIds.map(String) : null;
+    const backups = mergeProxyBackups(Array.isArray(existing.backups) ? existing.backups : [], {
+      keepIds: keepBackupIds,
+      additions: backupInputs
+    });
+    const endpointKeys = new Set(url ? [proxyEndpointKey(url)] : []);
+    const uniqueBackups = [];
+    for (const v of backups) {
+      const key = proxyEndpointKey(v);
+      if (v && key && !endpointKeys.has(key)) {
+        endpointKeys.add(key);
+        uniqueBackups.push(v);
+      }
+    }
+    const enabled = req.body?.enabled === undefined ? Boolean(url) : Boolean(req.body.enabled);
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    const payload = { enabled: Boolean(enabled && url), url, backups, platformModes: existing.platformModes || {}, updatedAt: new Date().toISOString() };
-    fs.writeFileSync(filePath, JSON.stringify(payload, null, 2), { mode: 0o600 });
-    appendHistory({ kind: 'proxy', ok: true, title: payload.enabled ? `proxy updated (+${backups.length} backup)` : 'proxy disabled' });
+    const payload = { enabled: Boolean(enabled && url), url, backups: uniqueBackups, platformModes: existing.platformModes || {}, updatedAt: new Date().toISOString() };
+    const tempPath = `${filePath}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`;
+    fs.writeFileSync(tempPath, JSON.stringify(payload, null, 2), { mode: 0o600 });
+    fs.renameSync(tempPath, filePath);
+    runtimePayloadCache = null;
+    appendHistory({ kind: 'proxy', ok: true, title: payload.enabled ? `proxy updated (+${uniqueBackups.length} backup)` : 'proxy disabled' });
     res.json({ ok: true, proxy: getProxyStatus() });
   } catch (error) {
     appendHistory({ kind: 'proxy', ok: false, error: error.message });
@@ -1162,6 +1177,7 @@ app.delete('/api/proxy', (req, res, next) => {
       fs.copyFileSync(filePath, `${filePath}.bak`);
       fs.unlinkSync(filePath);
     }
+    runtimePayloadCache = null;
     appendHistory({ kind: 'proxy', ok: true, title: 'proxy deleted' });
     res.json({ ok: true, proxy: getProxyStatus() });
   } catch (error) {
@@ -1202,6 +1218,14 @@ function normalizeInterval(v) {
   return COOKIECLOUD_ALLOWED_INTERVALS.reduce((best, cur) => Math.abs(cur - n) < Math.abs(best - n) ? cur : best, 0);
 }
 
+function persistCookieCloudSyncResult(startedConfig, { lastSync = null, lastResult = null } = {}) {
+  const merged = mergeCookieCloudSyncState({ started: startedConfig, current: readCookieCloudConfig(), lastSync, lastResult });
+  if (!merged) return false;
+  writeCookieCloudConfig(merged);
+  runtimePayloadCache = null;
+  return true;
+}
+
 function scheduleCookieCloudSync() {
   if (cookieCloudTimer) { clearInterval(cookieCloudTimer); cookieCloudTimer = null; }
   const config = readCookieCloudConfig();
@@ -1209,11 +1233,13 @@ function scheduleCookieCloudSync() {
   if (!config.enabled || !interval || !config.server || !config.uuid || !config.password) return;
   const ms = interval * 60 * 1000;
   cookieCloudTimer = setInterval(async () => {
+    let startedConfig = null;
     try {
       const cur = readCookieCloudConfig();
+      startedConfig = cur;
       if (!cur.enabled || !normalizeInterval(cur.intervalMinutes)) { scheduleCookieCloudSync(); return; }
       const result = await runCookieCloudSync(cur);
-      writeCookieCloudConfig({ ...cur, lastSync: new Date().toISOString(), lastResult: { ok: true, synced: result.synced, skipped: result.skipped, auto: true } });
+      persistCookieCloudSyncResult(cur, { lastSync: new Date().toISOString(), lastResult: { ok: true, synced: result.synced, skipped: result.skipped, auto: true } });
       appendHistory({
         kind: 'cookiecloud', ok: true,
         title: `定时同步 (${result.synced.length} 平台)`,
@@ -1223,13 +1249,16 @@ function scheduleCookieCloudSync() {
         cookiePromotionSource: result.youtubePromotion?.ok ? 'cookiecloud' : undefined
       });
     } catch (error) {
-      const cur = readCookieCloudConfig();
-      writeCookieCloudConfig({ ...cur, lastResult: { ok: false, error: error.message, auto: true } });
+      if (startedConfig) persistCookieCloudSyncResult(startedConfig, { lastResult: { ok: false, error: error.message, auto: true } });
       appendHistory({ kind: 'cookiecloud', ok: false, error: `定时同步失败: ${error.message}` });
     }
   }, ms);
   cookieCloudTimer.unref?.();
   console.log(`[cookiecloud] 定时同步已启用：每 ${interval} 分钟`);
+}
+
+function cookieCloudIdentityMatches(expected = {}, current = readCookieCloudConfig()) {
+  return Boolean(mergeCookieCloudSyncState({ started: expected, current }));
 }
 
 async function runCookieCloudSync(config) {
@@ -1239,16 +1268,20 @@ async function runCookieCloudSync(config) {
     platformDomainMap,
     cookieToNetscapeLine,
     cookieFilePath: platformId => platformId === 'youtube' ? path.join(cookieDirPath(), 'youtube.source.txt') : cookieFilePath(platformId),
-    cookieDir: cookieDirPath()
+    cookieDir: cookieDirPath(),
+    canCommit: () => cookieCloudIdentityMatches(config)
   });
+  if (result.stale) return result;
   const youtubeSynced = result.synced.find(item => item.platform === 'youtube');
   if (youtubeSynced) {
     try {
       const content = fs.readFileSync(path.join(cookieDirPath(), 'youtube.source.txt'), 'utf8');
+      if (!cookieCloudIdentityMatches(config)) return { ...result, stale: true, youtubePromotion: { ok: false, errorClass: 'stale-source' } };
       const promoted = await promoteYoutubeCandidate(content, {
         cookieDir: cookieDirPath(),
         validate: validateYoutubeCookieCandidate,
-        source: 'cookiecloud'
+        source: 'cookiecloud',
+        canCommit: () => cookieCloudIdentityMatches(config)
       });
       result.youtubePromotion = { ok: true, count: promoted.summary.count, sha256: promoted.sha256 };
       appendCookieSyncAudit(cookieDirPath(), { actor: 'cookiecloud', action: 'promote-master', platform: 'youtube', outcome: 'validated-promoted', incoming: { count: promoted.summary.count, complete: true }, after: { count: promoted.summary.count, complete: true } });
@@ -1277,12 +1310,10 @@ const youtubeCredentialRecovery = createYoutubeCredentialRecovery({
       error.errorClass = result.youtubePromotion?.errorClass || 'cookie-refresh-invalid';
       throw error;
     }
-    writeCookieCloudConfig({
-      ...readCookieCloudConfig(), ...config,
+    persistCookieCloudSyncResult(config, {
       lastSync: new Date().toISOString(),
       lastResult: { ok: true, synced: result.synced, skipped: result.skipped, recovery: true }
     });
-    runtimePayloadCache = null;
     return { ok: true, promoted: true, count: result.youtubePromotion.count };
   },
   cooldownMs: 60_000
@@ -1414,9 +1445,9 @@ app.post('/api/cookiecloud', async (req, res, next) => {
       try {
         const result = await runCookieCloudSync(config);
         sync = result;
-        writeCookieCloudConfig({ ...readCookieCloudConfig(), ...config, lastSync: new Date().toISOString(), lastResult: { ok: true, synced: result.synced, skipped: result.skipped } });
+        persistCookieCloudSyncResult(config, { lastSync: new Date().toISOString(), lastResult: { ok: true, synced: result.synced, skipped: result.skipped } });
       } catch (error) {
-        writeCookieCloudConfig({ ...readCookieCloudConfig(), ...config, lastResult: { ok: false, error: error.message } });
+        persistCookieCloudSyncResult(config, { lastResult: { ok: false, error: error.message } });
         sync = { error: error.message, synced: [], skipped: [] };
       }
     }
@@ -1464,11 +1495,11 @@ app.post('/api/cookiecloud/sync', async (req, res, next) => {
     }
     try {
       const result = await runCookieCloudSync(config);
-      writeCookieCloudConfig({ ...readCookieCloudConfig(), ...config, lastSync: new Date().toISOString(), lastResult: { ok: true, synced: result.synced, skipped: result.skipped } });
+      persistCookieCloudSyncResult(config, { lastSync: new Date().toISOString(), lastResult: { ok: true, synced: result.synced, skipped: result.skipped } });
       appendHistory({ kind: 'cookiecloud', ok: true, title: `cookiecloud sync (${result.synced.length} platforms)` });
       res.json({ ok: true, synced: result.synced, skipped: result.skipped });
     } catch (error) {
-      writeCookieCloudConfig({ ...readCookieCloudConfig(), ...config, lastResult: { ok: false, error: error.message } });
+      persistCookieCloudSyncResult(config, { lastResult: { ok: false, error: error.message } });
       appendHistory({ kind: 'cookiecloud', ok: false, error: error.message });
       res.status(502).json({ ok: false, error: error.message, synced: [], skipped: [] });
     }
@@ -1507,7 +1538,11 @@ app.post('/api/proxy/platforms/:platform', (req, res, next) => {
     const platformModes = existing.platformModes && typeof existing.platformModes === 'object' ? existing.platformModes : {};
     if (mode === 'auto') delete platformModes[platformId]; else platformModes[platformId] = mode;
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, JSON.stringify({ ...existing, platformModes }, null, 2), { mode: 0o600 });
+    const nextConfig = JSON.stringify({ ...existing, platformModes }, null, 2);
+    const tempPath = `${file}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`;
+    fs.writeFileSync(tempPath, nextConfig, { mode: 0o600 });
+    fs.renameSync(tempPath, file);
+    runtimePayloadCache = null;
     res.json({ ok: true, platform: platformId, mode, effective: shouldUseProxyForPlatform(platformId) ? 'proxy' : 'direct', proxy: getProxyStatus() });
   } catch (error) { next(error); }
 });
@@ -1747,10 +1782,10 @@ function ytdlpShortcutFormatSelectorForPlatform(preferences = {}, platformId = '
   return `${video}${height}[ext=mp4][vcodec^=avc1]+${audio}[ext=m4a]/b${height}[ext=mp4][vcodec^=avc1]/${video}${height}[ext=mp4]+${audio}[ext=m4a]/b${height}[ext=mp4]/b`;
 }
 
-function ytdlpFileDownloadArgs(sourceUrl = '', preferences = {}, outputTemplate = '', platformId = 'youtube', cookieArgs = null) {
+function ytdlpFileDownloadArgs(sourceUrl = '', preferences = {}, outputTemplate = '', platformId = 'youtube', cookieArgs = null, proxyArgs = null) {
   const prefs = normalizeParsePreferences(preferences);
   const args = [
-    ...getProxyArgs(platformId),
+    ...(proxyArgs || getProxyArgs(platformId)),
     ...(cookieArgs || getCookieDownloadArgs(platformId)),
     ...ytdlpDownloadExtraArgs(platformId),
     '--no-playlist',
@@ -1820,11 +1855,27 @@ async function downloadYtDlpToFile(sourceUrl, preferences, { iosCompatible = fal
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `onepick-${platform.id}-`));
   const outputTemplate = path.join(tempDir, 'download.%(ext)s');
   try {
-    await withRuntimeCookieArgs(ytdlpPlatformId, cookieArgs => execFileAsync(
-      'yt-dlp',
-      ytdlpFileDownloadArgs(sourceUrl, prefs, outputTemplate, ytdlpPlatformId, ytdlpPlatformId === 'youtube' ? cookieArgs : null),
-      { cwd: path.join(__dirname, '..'), timeout: 120000, maxBuffer: 1024 * 1024 }
-    ));
+    const proxyPlan = planProxyChain(ytdlpPlatformId);
+    const proxyResult = await runWithProxyChain({
+      chain: proxyPlan.chain,
+      isRetriable: error => isProxyFailoverError(ytdlpPlatformId, String(error?.stderr || error?.message || error || '')),
+      operation: async proxyEntry => {
+        await withRuntimeCookieArgs(ytdlpPlatformId, cookieArgs => execFileAsync(
+          'yt-dlp',
+          ytdlpFileDownloadArgs(
+            sourceUrl,
+            prefs,
+            outputTemplate,
+            ytdlpPlatformId,
+            ytdlpPlatformId === 'youtube' ? cookieArgs : null,
+            proxyEntryArgs(proxyEntry)
+          ),
+          { cwd: path.join(__dirname, '..'), timeout: 120000, maxBuffer: 1024 * 1024 }
+        ));
+        return proxyEntry;
+      }
+    });
+    if (proxyResult) markPrimaryProxyUsed(ytdlpPlatformId, typeof proxyResult === 'string' ? proxyResult : proxyResult.url);
     const files = fs.readdirSync(tempDir).map(name => path.join(tempDir, name));
     const outputPath = files.find(file => file.endsWith(`.${extension}`)) || files[0];
     if (!outputPath || !fs.existsSync(outputPath)) {
@@ -1884,6 +1935,16 @@ async function downloadYtDlpToFile(sourceUrl, preferences, { iosCompatible = fal
   }
 }
 
+async function downloadYtDlpWithYoutubeRecovery(sourceUrl, preferences, options = {}) {
+  let platformId = '';
+  try { platformId = detectPlatform(sourceUrl).id; } catch {}
+  return runWithYoutubeCredentialRecovery({
+    platformId,
+    operation: () => downloadYtDlpToFile(sourceUrl, preferences, options),
+    recover: () => youtubeCredentialRecovery.refreshOnce()
+  });
+}
+
 async function streamYtDlpDownload({ sourceUrl, filename, preferences, req, res, next, iosCompatible = false }) {
   const started = Date.now();
   try {
@@ -1896,7 +1957,7 @@ async function streamYtDlpDownload({ sourceUrl, filename, preferences, req, res,
     const platform = detectPlatform(sourceUrl);
     const extension = prefs.mode === 'audio' ? 'm4a' : 'mp4';
     const safeFilename = safeDownloadName(filename || `${platform.id}-${Date.now()}.${extension}`).replace(/\.[^.]+$/, `.${extension}`);
-    const { path: streamPath, tempDir } = await downloadYtDlpToFile(sourceUrl, prefs, { iosCompatible });
+    const { path: streamPath, tempDir } = await downloadYtDlpWithYoutubeRecovery(sourceUrl, prefs, { iosCompatible });
     try {
       res.setHeader('Content-Type', prefs.mode === 'audio' ? 'audio/mp4' : 'video/mp4');
       res.setHeader('Content-Length', String(fs.statSync(streamPath).size));
@@ -2439,7 +2500,7 @@ const runLimitedArchive = withConcurrencyLimit(2, async (req, res, next) => {
           const prefs = { mode: q.get('mode') || 'video', quality: q.get('quality') || '1080' };
           let tmp;
           try {
-            const dl = await downloadYtDlpToFile(item.sourceUrl, prefs);
+            const dl = await downloadYtDlpWithYoutubeRecovery(item.sourceUrl, prefs);
             tmp = dl.tempDir;
             tempDirs.add(tmp);
             archive.append(fs.createReadStream(dl.path), { name: item.filename });

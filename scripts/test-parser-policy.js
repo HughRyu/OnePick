@@ -1,6 +1,11 @@
 import assert from 'node:assert/strict';
 import { parseGeneric } from '../src/parsers/generic.js';
 import { parseTwitter } from '../src/parsers/twitter.js';
+import { isProxyFailoverError } from '../src/parsers/shared.js';
+
+assert.equal(isProxyFailoverError('youtube', 'Sign in to confirm you’re not a bot'), true, 'YouTube bot-check must fail over to a different proxy exit');
+assert.equal(isProxyFailoverError('youtube', 'LOGIN_REQUIRED'), true, 'YouTube login challenge must fail over to a different proxy exit');
+assert.equal(isProxyFailoverError('facebook', 'This video is private'), false, 'content errors must not rotate proxies');
 
 const twitterUrl = 'https://x.com/example/status/1812345678901234567';
 

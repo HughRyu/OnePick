@@ -80,6 +80,8 @@ assert.equal(attempts, 1, 'failed recovery must preserve the original error with
 const serverSource = fs.readFileSync(new URL('../src/server.js', import.meta.url), 'utf8');
 assert.match(serverSource, /app\.post\('\/api\/parse'[\s\S]*?parseMediaWithYoutubeRecovery\(/, '/api/parse must use YouTube recovery');
 assert.match(serverSource, /async function sendShortcutDownload[\s\S]*?parseMediaWithYoutubeRecovery\(/, 'shortcut downloads must use YouTube recovery');
-assert.match(serverSource, /app\.get\('\/api\/shortcut\/browser-download-info'[\s\S]*?parseMediaWithYoutubeRecovery\(/, 'browser download info must use YouTube recovery');
+assert.match(serverSource, /async function downloadYtDlpWithYoutubeRecovery[\s\S]*?runWithYoutubeCredentialRecovery\(/, 'actual yt-dlp downloads must use YouTube recovery');
+assert.match(serverSource, /async function streamYtDlpDownload[\s\S]*?downloadYtDlpWithYoutubeRecovery\(/, 'stream downloads must use download-level YouTube recovery');
+assert.match(serverSource, /const dl = await downloadYtDlpWithYoutubeRecovery\(item\.sourceUrl, prefs\)/, 'archive downloads must use download-level YouTube recovery');
 
 console.log('YouTube credential recovery tests passed');

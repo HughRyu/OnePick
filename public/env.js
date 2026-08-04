@@ -231,7 +231,13 @@ export async function loadEnvView(force = false) {
   const statusEl = document.querySelector('#status');
   if (statusEl && !envLoaded && !runtimeCache) statusEl.innerHTML = renderStatusSkeleton();
   try {
-    const data = await (await fetch('/api/runtime')).json();
+    const runtimeResponse = await fetch('/api/runtime');
+    if (!runtimeResponse.ok) throw new Error(`环境状态加载失败（HTTP ${runtimeResponse.status}）`);
+    const data = await runtimeResponse.json();
+    const configResponse = await fetch('/api/config');
+    if (!configResponse.ok) throw new Error(`环境配置加载失败（HTTP ${configResponse.status}）`);
+    const configData = await configResponse.json();
+    const proxyConfig = configData.proxy || {};
     runtimeCache = data;
     renderStatus(data);
     setTimeout(() => renderPlatforms(data), 0);
@@ -244,11 +250,11 @@ export async function loadEnvView(force = false) {
     const proxyCurrent = document.querySelector('#proxy-current');
     if (proxyCurrent) proxyCurrent.textContent = '';
     const proxyInput = document.querySelector('#proxy-url');
-    if (proxyInput && data.proxy?.url) proxyInput.value = data.proxy.url;
+    if (proxyInput && !proxyInput.value && proxyConfig.urlMasked) proxyInput.placeholder = `已保存：${proxyConfig.urlMasked}（留空保留）`;
     const backupWrap = document.querySelector('#proxy-backups');
     if (backupWrap && !backupWrap.dataset.loaded) {
       backupWrap.innerHTML = '';
-      (data.proxy?.backups || []).forEach(url => addBackupProxyRow(url));
+      (proxyConfig.backupEntries || []).forEach(entry => addBackupProxyRow('', `已保存：${entry.masked}（留空保留）`, entry.id));
       backupWrap.dataset.loaded = '1';
     }
     // CookieCloud 状态 + 预填：只信 /api/cookiecloud 完整配置；保存中不让旧响应覆盖用户刚选的 interval
@@ -360,37 +366,42 @@ async function clearHistory() {
 
 // ============ 代理 ============
 // 备用代理行：动态添加/删除
-function addBackupProxyRow(value = '') {
+function addBackupProxyRow(value = '', placeholder = 'socks5://备用代理:端口', entryId = '') {
   const wrap = document.querySelector('#proxy-backups');
   if (!wrap) return;
   const row = document.createElement('div');
   row.className = 'proxy-backup-row';
-  row.innerHTML = `<input class="proxy-input full proxy-backup-input" type="text" autocomplete="off" placeholder="socks5://备用代理:端口" />
+  if (entryId) row.dataset.entryId = entryId;
+  row.innerHTML = `<input class="proxy-input full proxy-backup-input" type="text" autocomplete="off" />
     <button class="mini-button danger proxy-backup-del" type="button">删除</button>`;
+  row.querySelector('.proxy-backup-input').placeholder = placeholder;
   row.querySelector('.proxy-backup-input').value = value;
   row.querySelector('.proxy-backup-del').addEventListener('click', () => row.remove());
   wrap.appendChild(row);
 }
 
-function collectBackupProxies() {
-  return Array.from(document.querySelectorAll('.proxy-backup-input'))
-    .map(i => i.value.trim()).filter(Boolean);
+function collectBackupEdits() {
+  const rows = Array.from(document.querySelectorAll('.proxy-backup-row'));
+  return {
+    keepBackupIds: rows.map(row => row.dataset.entryId || '').filter(Boolean),
+    backups: rows.map(row => row.querySelector('.proxy-backup-input')?.value.trim() || '').filter(Boolean)
+  };
 }
 
 async function saveProxy() {
   const input = document.querySelector('#proxy-url');
   const status = document.querySelector('#proxy-status');
   const url = input?.value?.trim() || '';
-  const backups = collectBackupProxies();
-  if (!url) { flashStatus('#proxy-status', '请先填写主代理地址。', 'warn'); return; }
+  const { backups, keepBackupIds } = collectBackupEdits();
+  if (!url && !input?.placeholder?.startsWith('已保存：')) { flashStatus('#proxy-status', '请先填写主代理地址。', 'warn'); return; }
   flashStatus('#proxy-status', '保存中...', '');
   try {
-    const response = await fetch('/api/proxy', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url, backups, enabled: true }) });
+    const response = await fetch('/api/proxy', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url, backups, keepBackupIds, enabled: true }) });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(payload.error || '保存失败');
     const bc = payload.proxy?.backupCount || 0;
     flashStatus('#proxy-status', `已启用${bc ? `，备用 ${bc} 条` : ''}`, 'ok');
-    if (input) input.value = url;
+    if (input && url) input.value = '';
     const wrap = document.querySelector('#proxy-backups');
     if (wrap) delete wrap.dataset.loaded;
     loadEnvView(true);
@@ -402,7 +413,7 @@ async function saveProxy() {
 async function testProxy() {
   const input = document.querySelector('#proxy-url');
   const url = input?.value?.trim() || '';
-  const backups = collectBackupProxies();
+  const { backups } = collectBackupEdits();
   if (!url && !backups.length) { flashStatus('#proxy-status', '请先填写要检测的代理地址。', 'warn'); return; }
   const btn = document.querySelector('#proxy-test');
   if (btn) { btn.disabled = true; btn.textContent = '检测中...'; }

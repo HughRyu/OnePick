@@ -74,4 +74,11 @@ try {
   await new Promise(resolve => localDirect.close(resolve));
 }
 
+const serverSource = fs.readFileSync(new URL('../src/server.js', import.meta.url), 'utf8');
+assert.equal(/proxy:\s*\{[^}]*url:\s*config\.url/.test(serverSource), false, 'config API must not expose raw proxy URLs');
+assert.match(serverSource, /proxy:\s*getProxyStatus\(\)/, 'config API must return only the redacted proxy DTO');
+
+assert.equal(fs.readFileSync(new URL('../public/app.js', import.meta.url), 'utf8').includes("localStorage.setItem('onepickToken'"), false, 'web app must not persist API tokens in localStorage');
+assert.equal(fs.readFileSync(new URL('../public/login.html', import.meta.url), 'utf8').includes("localStorage.setItem('onepickToken'"), false, 'login page must rely on HttpOnly session cookies');
+
 console.log('security hardening tests passed');

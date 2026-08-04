@@ -1,4 +1,5 @@
-import { loadEnvView, loadHistoryView } from '/env.js?v=2.4.61';
+import { loadEnvView, loadHistoryView } from '/env.js?v=2.4.63';
+import { shouldUseBufferedBrowserDownload, shouldUseNativeDownloadBeforeFetch } from '/browser-download-policy.js?v=2.4.63';
 
 const form = document.querySelector('#parse-form');
 const cardHistoryButton = document.querySelector('.card-history-button');
@@ -218,7 +219,7 @@ function renderResult(payload) {
       <button class="mini-button reinput-button" type="button" data-reinput title="返回重新输入链接">↩ 重新输入</button>
     </div>
     <div class="result-head">
-      ${payload.cover ? `<img src="/api/image-proxy?url=${encodeURIComponent(payload.cover)}" alt="" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'cover-placeholder',innerHTML:'<img src=&quot;/logo.png?v=2.4.61&quot; alt=&quot;&quot; width=&quot;42&quot; height=&quot;42&quot; />'}))" />` : '<div class="cover-placeholder"><img src="/logo.png?v=2.4.61" alt="" width="42" height="42" /></div>'}
+      ${payload.cover ? `<img src="/api/image-proxy?url=${encodeURIComponent(payload.cover)}" alt="" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'cover-placeholder',innerHTML:'<img src=&quot;/logo.png?v=2.4.63&quot; alt=&quot;&quot; width=&quot;42&quot; height=&quot;42&quot; />'}))" />` : '<div class="cover-placeholder"><img src="/logo.png?v=2.4.63" alt="" width="42" height="42" /></div>'}
       <div>
         <p class="eyebrow">${escapeHtml(platformName)} · ${escapeHtml(payload.engine || 'parser')}</p>
         <h3>${escapeHtml(cleanTitle(payload.title, '解析结果'))}</h3>
@@ -382,6 +383,11 @@ async function downloadWithProgress(button) {
     // 用不定量动画表示"服务端处理中"，避免"点了没反应"的死等观感。
     indeterminate();
     setText('服务端处理中…');
+    if (shouldUseNativeDownloadBeforeFetch(href)) {
+      triggerNativeDownload(href, name);
+      setText('已交给浏览器下载…');
+      return;
+    }
     const response = await fetch(href);
     if (!response.ok) {
       const payload = await response.json().catch(() => ({}));
@@ -404,6 +410,12 @@ async function downloadWithProgress(button) {
       return;
     }
     const reader = response.body.getReader();
+    if (!shouldUseBufferedBrowserDownload({ contentLength: total })) {
+      await reader.cancel().catch(() => {});
+      setText(total ? `大文件 ${formatBytes(total)} · 浏览器原生下载…` : '文件大小未知 · 浏览器原生下载…');
+      triggerNativeDownload(href, filename);
+      return;
+    }
     const chunks = [];
     let received = 0;
     // 有 Content-Length（直链平台）→ 切回确定态显示真百分比；无（yt-dlp 服务端已下完，浏览器瞬时接收）→ 保持动画
@@ -440,6 +452,15 @@ async function downloadWithProgress(button) {
     button.disabled = false;
     button.textContent = originalText || '下载';
   }
+}
+
+function triggerNativeDownload(href, filename = '') {
+  const a = document.createElement('a');
+  a.href = href;
+  if (filename) a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
 }
 
 function triggerSave(blob, filename) {
@@ -649,7 +670,6 @@ document.querySelector('#token-show')?.addEventListener('click', async () => {
   try {
     const payload = await fetchJson('/api/auth/token', { method: 'POST' });
     accountToken.value = payload.token || '';
-    try { localStorage.setItem('onepickToken', payload.token || ''); } catch {}
     tokenBox.hidden = false;
   } catch (error) {
     accountToken.value = error.message;
@@ -687,7 +707,6 @@ accountForm?.addEventListener('submit', async event => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
     });
-    try { localStorage.setItem('onepickToken', payload.token || ''); } catch {}
     if (accountFormStatus) accountFormStatus.textContent = '已保存。正在刷新登录状态...';
     setTimeout(() => location.reload(), 500);
   } catch (error) {
@@ -697,7 +716,6 @@ accountForm?.addEventListener('submit', async event => {
 
 document.querySelector('#logout-button')?.addEventListener('click', async () => {
   await fetch('/api/auth/logout', { method: 'POST' }).catch(() => {});
-  try { localStorage.removeItem('onepickToken'); } catch {}
   location.href = '/login';
 });
 

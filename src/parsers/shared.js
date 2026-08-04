@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import dns from 'node:dns/promises';
@@ -48,6 +49,9 @@ export function maskProxyUrl(proxyUrl = '') {
     const parsed = new URL(proxyUrl);
     if (parsed.username) parsed.username = '***';
     if (parsed.password) parsed.password = '***';
+    parsed.pathname = '/';
+    parsed.search = '';
+    parsed.hash = '';
     return parsed.toString();
   } catch {
     return '***';
@@ -108,6 +112,57 @@ export function shouldUseProxyForPlatform(platformId = '') {
   return defaultProxyModeForPlatform(platformId) === 'proxy';
 }
 
+export function proxyEndpointKey(value = '') {
+  try {
+    const parsed = new URL(String(value || ''));
+    const defaultPort = parsed.protocol === 'https:' ? '443' : (parsed.protocol.startsWith('socks') ? '1080' : '80');
+    return `${parsed.protocol}//${parsed.hostname.toLowerCase()}:${parsed.port || defaultPort}`;
+  } catch {
+    return String(value || '');
+  }
+}
+
+function uniqueProxyEndpoints(values = [], primaryUrl = '') {
+  const primaryKey = proxyEndpointKey(primaryUrl);
+  const seen = new Set(primaryKey ? [primaryKey] : []);
+  const result = [];
+  for (const value of values) {
+    const key = proxyEndpointKey(value);
+    if (!value || !key || seen.has(key)) continue;
+    seen.add(key);
+    result.push(value);
+  }
+  return result;
+}
+
+function proxyEntryIdSecret() {
+  const secret = process.env.ONEPICK_AUTH_SECRET || process.env.ONEPICK_AUTH_PASSWORD || process.env.ONEPICK_ADMIN_PASSWORD || '';
+  if (!secret) {
+    const error = new Error('代理条目 ID 需要配置服务器认证密钥。');
+    error.code = 'PROXY_ID_SECRET_REQUIRED';
+    throw error;
+  }
+  return secret;
+}
+
+export function proxyEntryId(value = '', secret = proxyEntryIdSecret()) {
+  const normalized = validateProxyUrl(value);
+  if (!normalized) return '';
+  // Keyed identifier prevents the masked host/port from becoming an offline
+  // password-guessing oracle while remaining stable across requests/restarts.
+  return crypto.createHmac('sha256', String(secret)).update(normalized).digest('hex').slice(0, 24);
+}
+
+export function mergeProxyBackups(existing = [], { keepIds = null, additions = [] } = {}) {
+  const kept = Array.isArray(keepIds)
+    ? existing.filter(value => keepIds.includes(proxyEntryId(value)))
+    : existing;
+  return uniqueProxyEndpoints([
+    ...kept,
+    ...additions.map(value => validateProxyUrl(value)).filter(Boolean)
+  ]);
+}
+
 export function getProxyConfig() {
   const envProxy = process.env.YTDLP_PROXY || process.env.HTTPS_PROXY || process.env.HTTP_PROXY || '';
   try {
@@ -116,9 +171,10 @@ export function getProxyConfig() {
       const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8'));
       const url = validateProxyUrl(parsed.url || '');
       // 备用代理列表（多代理轮询用）：逐个校验，跳过非法项
-      const backups = Array.isArray(parsed.backups) ? parsed.backups
+      const rawBackups = Array.isArray(parsed.backups) ? parsed.backups
         .map(u => { try { return validateProxyUrl(u); } catch { return ''; } })
-        .filter(u => u && u !== url) : [];
+        .filter(Boolean) : [];
+      const backups = uniqueProxyEndpoints(rawBackups, url);
       const platformModes = parsed.platformModes && typeof parsed.platformModes === 'object' ? parsed.platformModes : {};
       return { enabled: Boolean(parsed.enabled && url), url, backups, platformModes, source: 'config-file' };
     }
@@ -132,11 +188,9 @@ export function getProxyStatus() {
   return {
     enabled: config.enabled,
     configured: Boolean(config.url),
-    // 仅给已认证的本地配置界面回填；runtime/config API 会在下一轮 scope 分离后改为脱敏 DTO。
-    url: config.url,
-    backups: config.backups || [],
     urlMasked: maskProxyUrl(config.url),
     backupsMasked: (config.backups || []).map(maskProxyUrl),
+    backupEntries: (config.backups || []).map(value => ({ id: proxyEntryId(value), masked: maskProxyUrl(value) })),
     backupCount: (config.backups || []).length,
     platformModes: getPlatformProxyModes(),
     defaultProxyPlatforms: Array.from(DEFAULT_PROXY_PLATFORMS),
@@ -511,6 +565,14 @@ function normalizeEntry(entry, index = 0, preferences = {}) {
   };
 }
 
+export function isProxyFailoverError(platformId = '', message = '') {
+  const text = String(message || '');
+  if (/rehydration|timed out|timeout|connection|refused|reset|tunnel|blocked|429|too many|rate/i.test(text)) return true;
+  // YouTube's bot challenge is often tied to the egress IP. Trying a genuinely
+  // different configured proxy is useful before credential recovery runs.
+  return String(platformId) === 'youtube' && /confirm you(?:’|')?re not a bot|sign in to confirm|login_required/i.test(text);
+}
+
 export async function parseWithYtDlp(url, extraArgs = [], preferences = {}, platformId = '') {
   const resolvedPreferences = normalizeParsePreferences(preferences);
   // 多代理轮询：规划代理链（主代理优先，冷却窗口内切备用），依次尝试，失败顺延下一个
@@ -542,7 +604,7 @@ export async function parseWithYtDlp(url, extraArgs = [], preferences = {}, plat
       lastError = error;
       const stderr = error.stderr || error.message || '';
       // 仅在“限流/网络受阻”类错误时才顺延下一个代理；内容类错误（私密/删除/无格式）直接抛出，换代理无意义
-      const retriable = /rehydration|timed out|timeout|connection|refused|reset|tunnel|blocked|429|too many|rate/i.test(stderr);
+      const retriable = isProxyFailoverError(platformId, stderr);
       if (i < attempts.length - 1 && retriable) continue;
       break;
     }

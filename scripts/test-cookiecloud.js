@@ -108,6 +108,27 @@ try {
     config: {}, platformDomainMap: domainMap,
     cookieToNetscapeLine: cookie => `.youtube.com\tTRUE\t/\tTRUE\t0\t${cookie.name}\t${cookie.value}`,
     cookieFilePath: id => path.join(auditRoot, `${id}.txt`), cookieDir: auditRoot,
+    fetchCookieCloudFn: async () => ({ cookie_data: { 'youtube.com': [{ name: 'SID', value: 'masked', domain: '.youtube.com' }] } }),
+    canCommit: () => false
+  });
+  assert.equal(fs.existsSync(path.join(auditRoot, 'youtube.txt')), false, 'stale CookieCloud sync must not write cookie files');
+  assert.equal(fs.existsSync(path.join(auditRoot, 'cookie-sync-audit.jsonl')), false, 'stale sync must stop before write/audit side effects');
+
+  let commitChecks = 0;
+  const staleDuringPublish = await syncCookieCloudToFiles({
+    config: {}, platformDomainMap: domainMap,
+    cookieToNetscapeLine: cookie => `.youtube.com\tTRUE\t/\tTRUE\t0\t${cookie.name}\t${cookie.value}`,
+    cookieFilePath: id => path.join(auditRoot, `stale-${id}.txt`), cookieDir: auditRoot,
+    fetchCookieCloudFn: async () => ({ cookie_data: { 'youtube.com': [{ name: 'SID', value: 'stale', domain: '.youtube.com' }] } }),
+    canCommit: () => ++commitChecks === 1
+  });
+  assert.equal(staleDuringPublish.stale, true, 'identity must be checked again at the publish boundary');
+  assert.equal(fs.existsSync(path.join(auditRoot, 'stale-youtube.txt')), false, 'identity changed after fetch must stop file publication');
+
+  await syncCookieCloudToFiles({
+    config: {}, platformDomainMap: domainMap,
+    cookieToNetscapeLine: cookie => `.youtube.com\tTRUE\t/\tTRUE\t0\t${cookie.name}\t${cookie.value}`,
+    cookieFilePath: id => path.join(auditRoot, `${id}.txt`), cookieDir: auditRoot,
     fetchCookieCloudFn: async () => ({ cookie_data: { 'youtube.com': [{ name: 'SID', value: 'masked', domain: '.youtube.com' }] } })
   });
   const audit = fs.readFileSync(path.join(auditRoot, 'cookie-sync-audit.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);

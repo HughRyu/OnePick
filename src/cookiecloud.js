@@ -361,11 +361,13 @@ export async function syncCookieCloudToFiles({
   cookieToNetscapeLine,
   cookieFilePath,
   cookieDir,
-  fetchCookieCloudFn = fetchCookieCloud
+  fetchCookieCloudFn = fetchCookieCloud,
+  canCommit = () => true
 }) {
   const parsed = await fetchCookieCloudFn(config);
   const cookieData = parsed && parsed.cookie_data ? parsed.cookie_data : {};
   const byPlatform = mapCookiesToPlatforms(cookieData, platformDomainMap);
+  if (!canCommit()) return { synced: [], skipped: [], stale: true };
 
   const synced = [];
   const skipped = [];
@@ -393,6 +395,7 @@ export async function syncCookieCloudToFiles({
       : { count: lines.length };
     const before = platformId === 'youtube' ? cookieFileSummary(filePath, platformId) : null;
     try {
+      if (!canCommit()) return { synced, skipped, stale: true };
       if (existingCookieFileMoreComplete(platformId, filePath, lines)) {
         const summary = cookieFileSummary(filePath, platformId);
         const reason = '新同步的 YouTube Cookie 缺关键登录态，已保留本地较完整 cookie 文件。';
