@@ -649,12 +649,22 @@ async function clearCookie() {
 async function checkCookie(platformId) {
   try {
     if (platformId === 'youtube') {
-      const response = await fetch('/api/cookies/youtube/check', { credentials: 'same-origin' });
+      const button = document.querySelector('[data-cookie-check="youtube"]');
+      const originalLabel = button?.textContent || '检查';
+      if (button) { button.disabled = true; button.textContent = '检查中…'; }
+      const started = performance.now();
+      let response;
+      try {
+        response = await fetch('/api/cookies/youtube/check', { credentials: 'same-origin' });
+      } finally {
+        if (button) { button.disabled = false; button.textContent = originalLabel; }
+      }
       const payload = await response.json().catch(() => ({}));
       const state = payload.state || {};
+      const seconds = Math.max(0.1, (performance.now() - started) / 1000).toFixed(1);
       const result = response.ok && payload.ok
-        ? `Cookie 有效。已通过当前代理出口的 yt-dlp 真实验证。\n条目数：${payload.count || state.count || 0}`
-        : `Cookie 无效。${payload.error || state.reason || '未通过当前代理出口的验证。'}`;
+        ? `Cookie 有效。已通过当前代理出口的 yt-dlp 真实验证。\n条目数：${payload.count || state.count || 0}\n耗时：${seconds} 秒`
+        : `Cookie 当前验证失败。${payload.error || state.reason || '未通过当前代理出口的验证。'}\n\n这不代表文件格式无效，也可能是登录态已刷新或代理出口被 YouTube 风控。\n耗时：${seconds} 秒`;
       showInfoDialog('YouTube Cookie 检查', result);
       loadEnvView(true);
       return;

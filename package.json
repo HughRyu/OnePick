@@ -13,7 +13,7 @@
     "test:policy": "node scripts/test-parser-policy.js && node scripts/test-no-ytdlp-policy.js",
     "test:twitter": "node scripts/test-twitter-parser.js",
     "test:twitter-time": "node scripts/test-twitter-download-time.js",
-    "test:youtube-cookie": "node scripts/test-youtube-cookie-lifecycle.js",
+    "test:youtube-cookie": "node scripts/test-youtube-cookie-lifecycle.js && node scripts/test-youtube-credential-recovery.js",
     "test:security": "node scripts/test-security-hardening.js",
     "test:shortcut": "node scripts/test-shortcut-regressions.js",
     "test": "npm run test:policy && npm run test:twitter && npm run test:youtube-cookie && npm run test:security && npm run test:shortcut"

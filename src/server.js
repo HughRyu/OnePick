@@ -18,6 +18,7 @@ import { assertPublicUrl, fetchPublicUrl, getCookieStatus, resolveRedirects, get
 import { YTDLP_PLATFORMS, ytdlpDownloadExtraArgs } from './parsers/ytdlp-platforms.js';
 import { readCookieCloudConfig, writeCookieCloudConfig, clearCookieCloudConfig, syncCookieCloudToFiles, buildPlatformDomainMap, fetchCookieCloud, appendCookieSyncAudit, readCookieSyncAudit } from './cookiecloud.js';
 import { promoteYoutubeCandidate, withRuntimeCookieArgs, activeYoutubeMasterPath, inspectYoutubeCookieText, youtubeCookiePaths, YOUTUBE_REQUIRED_COOKIE_NAMES } from './youtube-cookie-store.js';
+import { createYoutubeCredentialRecovery, runWithYoutubeCredentialRecovery } from './youtube-credential-recovery.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1262,6 +1263,44 @@ async function runCookieCloudSync(config) {
   return result;
 }
 
+const youtubeCredentialRecovery = createYoutubeCredentialRecovery({
+  refresh: async () => {
+    const config = readCookieCloudConfig();
+    if (!config.enabled || !config.server || !config.uuid || !config.password) {
+      const error = new Error('CookieCloud 未启用或配置不完整，无法自动刷新 YouTube Cookie。');
+      error.errorClass = 'cookiecloud-unavailable';
+      throw error;
+    }
+    const result = await runCookieCloudSync(config);
+    if (!result.youtubePromotion?.ok) {
+      const error = new Error(result.youtubePromotion?.error || 'CookieCloud 中的 YouTube Cookie 未通过真实验证。');
+      error.errorClass = result.youtubePromotion?.errorClass || 'cookie-refresh-invalid';
+      throw error;
+    }
+    writeCookieCloudConfig({
+      ...readCookieCloudConfig(), ...config,
+      lastSync: new Date().toISOString(),
+      lastResult: { ok: true, synced: result.synced, skipped: result.skipped, recovery: true }
+    });
+    runtimePayloadCache = null;
+    return { ok: true, promoted: true, count: result.youtubePromotion.count };
+  },
+  cooldownMs: 60_000
+});
+
+async function parseMediaWithYoutubeRecovery({ input, preferences }) {
+  let platformId = '';
+  try {
+    const sourceUrl = extractFirstUrl(input);
+    platformId = sourceUrl ? detectPlatform(sourceUrl).id : '';
+  } catch {}
+  return runWithYoutubeCredentialRecovery({
+    platformId,
+    operation: () => parseMedia({ input, preferences }),
+    recover: () => youtubeCredentialRecovery.refreshOnce()
+  });
+}
+
 async function validateYoutubeCookieCandidate(candidatePath) {
   const testUrl = process.env.YOUTUBE_COOKIE_TEST_URL || 'https://www.youtube.com/watch?v=OImbRaEk8ss';
   const args = [
@@ -2057,7 +2096,7 @@ app.post('/api/parse', async (req, res, next) => {
   const input = requestInputText(req.body || {});
   const preferences = normalizeParsePreferences(req.body?.preferences || req.body || {});
   try {
-    const result = await parseMedia({ input, preferences });
+    const result = await parseMediaWithYoutubeRecovery({ input, preferences });
     appendHistory({ kind: 'parse', ok: true, durationMs: Date.now() - started, processDurationMs: Date.now() - started, mediaDuration: result.duration || null, platform: result.platform?.id, parser: result.parser || result.engine, title: result.title, sourceUrl: result.sourceUrl || input, itemCount: Array.isArray(result.items) ? result.items.length : 0 });
     res.status(200).json(result);
   } catch (error) {
@@ -2118,7 +2157,7 @@ function shortcutPreferences(body = {}) {
 
 async function sendShortcutDownload({ input, preferences, itemIndex, started, req, res, next }) {
   const clientMeta = parseClientMeta(req.body?.clientMeta || req.query?.clientMeta);
-  const parsed = await parseMedia({ input, preferences });
+  const parsed = await parseMediaWithYoutubeRecovery({ input, preferences });
   const { item, candidates } = selectShortcutItem(parsed.items, itemIndex);
   if (!item) {
     const error = new Error('没有找到可下载的媒体文件。');
@@ -2216,7 +2255,7 @@ app.get('/api/shortcut/browser-download-info', async (req, res, next) => {
   const preferences = normalizeParsePreferences({ mode: req.query?.mode, quality: req.query?.quality });
   const clientMeta = parseClientMeta(req.query?.clientMeta);
   try {
-    const parsed = await parseMedia({ input, preferences });
+    const parsed = await parseMediaWithYoutubeRecovery({ input, preferences });
     const { item, candidates } = selectShortcutItem(parsed.items, req.query?.itemIndex);
     if (!item) {
       const error = new Error('没有找到可下载的媒体文件。');
