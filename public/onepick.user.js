@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OnePick
 // @namespace    onepick
-// @version      1.41.3
+// @version      1.41.4
 // @description  在支持站点页面插入 OnePick 下载按钮；支持逐站点开关；使用浏览器原生下载器保证落盘可靠。
 // @author       Hugh
 // @match        https://*.tiktok.com/*
@@ -110,7 +110,7 @@
     youtube: {
       name: 'YouTube',
       test: h => /(^|\.)youtube\.com$|^youtu\.be$/.test(h),
-      isContent: () => /\/watch|\/shorts\//.test(location.pathname) || !!q('video'),
+      isContent: () => location.pathname.startsWith('/watch'),
       anchor: () => q('ytd-download-button-renderer') || q('#segmented-download-button') || findByText(['button', 'ytd-button-renderer', 'a'], /^(Download|下载)$/i) || q('#top-level-buttons-computed'),
       replaceNative: true,
       css: 'background:var(--yt-spec-button-chip-background-hover,rgba(0,0,0,.05));color:var(--yt-spec-text-primary,#0f0f0f);border-radius:18px;font-size:14px;padding:8px 16px;font-family:Roboto,Arial;',
@@ -1014,13 +1014,14 @@
     }, 500);
   }
 
+  function removeYoutubeShortsButtons() {
+    document.querySelectorAll('.onepick-youtube-shorts,.onepick-youtube-float').forEach(x => x.remove());
+    document.getElementById(BTN_ID)?.remove();
+  }
+
   function injectYoutube() {
-    document.querySelectorAll('.onepick-youtube-float').forEach(x => x.remove());
-    if (location.pathname.startsWith('/shorts/')) {
-      document.getElementById(BTN_ID)?.remove();
-      injectYoutubeShortsList();
-      return;
-    }
+    removeYoutubeShortsButtons();
+    if (location.pathname.startsWith('/shorts/')) return;
     const old = document.getElementById(BTN_ID);
     if (!cfg.siteOn(siteId) || !SITE.isContent()) { old?.remove(); return; }
     if (location.pathname.startsWith('/watch')) {
@@ -1044,8 +1045,8 @@
   }
 
   function inject() {
-    if (!cfg.showButton) { document.querySelectorAll('.onepick-dl-btn,.onepick-x-holder').forEach(x => x.remove()); return; }
-    if (!cfg.siteOn(siteId)) { document.querySelectorAll('.onepick-dl-btn,.onepick-x-holder').forEach(x => x.remove()); return; }
+    if (!cfg.showButton) { document.querySelectorAll('.onepick-dl-btn,.onepick-x-holder,.onepick-youtube-shorts,.onepick-youtube-float').forEach(x => x.remove()); return; }
+    if (!cfg.siteOn(siteId)) { document.querySelectorAll('.onepick-dl-btn,.onepick-x-holder,.onepick-youtube-shorts,.onepick-youtube-float').forEach(x => x.remove()); return; }
     if (siteId === 'youtube') { injectYoutube(); return; }
     if (siteId === 'x') { injectXList(); return; }
     if (siteId === 'weibo') { document.querySelectorAll('.onepick-dl-btn,.onepick-x-holder').forEach(x => x.remove()); return; }
