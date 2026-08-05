@@ -446,14 +446,15 @@ async function saveProxy() {
 
 async function testProxy() {
   const input = document.querySelector('#proxy-url');
-  const url = input?.value?.trim() || '';
-  const { backups } = collectBackupEdits();
-  if (!url && !backups.length) { flashStatus('#proxy-status', '请先填写要检测的代理地址。', 'warn'); return; }
+  const url = input?.dataset.saved === '1' ? '' : (input?.value?.trim() || '');
+  const { backups, keepBackupIds } = collectBackupEdits();
+  const useSavedMain = input?.dataset.saved === '1';
+  if (!url && !backups.length && !keepBackupIds.length && !useSavedMain) { flashStatus('#proxy-status', '请先填写要检测的代理地址。', 'warn'); return; }
   const btn = document.querySelector('#proxy-test');
   if (btn) { btn.disabled = true; btn.textContent = '检测中...'; }
   flashStatus('#proxy-status', '正在检测代理有效性与延迟...', '');
   try {
-    const response = await fetch('/api/proxy/test', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url, backups }) });
+    const response = await fetch('/api/proxy/test', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url, backups, keepBackupIds, useSavedMain }) });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(payload.error || '检测失败');
     const results = payload.results || [];

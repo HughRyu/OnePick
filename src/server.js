@@ -1128,10 +1128,12 @@ app.post('/api/proxy', (req, res, next) => {
 app.post('/api/proxy/test', async (req, res, next) => {
   try {
     const explicit = typeof req.body === 'string' ? req.body : String(req.body?.url || '');
-    const status = getProxyStatus();
     const config = getProxyConfig();
-    const main = explicit || config.url || '';
-    const urls = [main, ...(Array.isArray(req.body?.backups) ? req.body.backups : [])].filter(Boolean);
+    const main = req.body?.useSavedMain ? config.url : explicit;
+    const keepBackupIds = Array.isArray(req.body?.keepBackupIds) ? req.body.keepBackupIds.map(String) : [];
+    const additions = Array.isArray(req.body?.backups) ? req.body.backups : [];
+    const backups = mergeProxyBackups(config.backups || [], { keepIds: keepBackupIds, additions });
+    const urls = [main, ...backups].filter(Boolean);
     if (!urls.length) { const error = new Error('请先填写代理地址。'); error.statusCode = 400; throw error; }
     const results = [];
     for (const url of urls.slice(0, 6)) {

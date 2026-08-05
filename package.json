@@ -1,6 +1,6 @@
 {
   "name": "onepick-tools",
-  "version": "2.4.64",
+  "version": "2.4.65",
   "private": true,
   "description": "OnePick Tools - modular AI-butler utility toolbox.",
   "type": "module",
