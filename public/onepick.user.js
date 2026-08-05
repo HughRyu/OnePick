@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OnePick
 // @namespace    onepick
-// @version      1.41.4
+// @version      1.41.5
 // @description  在支持站点页面插入 OnePick 下载按钮；支持逐站点开关；使用浏览器原生下载器保证落盘可靠。
 // @author       Hugh
 // @match        https://*.tiktok.com/*
@@ -33,7 +33,7 @@
 
 (function () {
   'use strict';
-  const ONEPICK_USERSCRIPT_VERSION = '1.41.4';
+  const ONEPICK_USERSCRIPT_VERSION = '1.41.5';
 
   /* ===== 服务器分发时自动注入（保持原样，勿改动此两行格式） ===== */
   const PRESET_SERVER = '__ONEPICK_SERVER__';
@@ -186,6 +186,7 @@
     set server(v) { GM_setValue('op_server', v); },
     get token() { return GM_getValue('op_token', '') || preset(PRESET_TOKEN); },
     set token(v) { GM_setValue('op_token', v); },
+    resetTokenToPreset() { GM_setValue('op_token', ''); return preset(PRESET_TOKEN); },
     siteOn(id) {
       const v = GM_getValue('op_site_' + id, true);
       return !(v === false || v === 'false' || v === 0 || v === '0');
@@ -483,9 +484,9 @@
     };
   }
 
-  function downloadInfoUrl(inputUrl) {
+  function downloadInfoUrl(inputUrl, tokenOverride = '') {
     const base = cfg.server;
-    const token = cfg.token;
+    const token = tokenOverride || cfg.token;
     if (!base || !token) return '';
     const resolvedInput = inputUrl || pageInputUrl();
     if ((siteId === 'douyin' || siteId === 'kuaishou' || siteId === 'instagram') && !resolvedInput) return '';
@@ -558,7 +559,7 @@
     return Promise.resolve(selected);
   }
 
-  function doDownload(btn) {
+  function doDownload(btn, authRetry = false) {
     // 信息流站点在按钮创建后会切换当前作品，点击时必须重新解析，而非使用右键/预取残留 URL。
     const liveInput = (siteId === 'douyin' || siteId === 'kuaishou' || siteId === 'instagram' || siteId === 'x') ? pageInputUrl() : '';
     const explicitInput = cleanTargetUrl(btn?.dataset?.inputUrl || '');
@@ -673,6 +674,14 @@
         let info = null;
         try { info = JSON.parse(resp.responseText || '{}'); } catch { }
         if (resp.status !== 200 || !info?.downloadUrl) {
+          if (resp.status === 401 && !authRetry && preset(PRESET_TOKEN)) {
+            cfg.resetTokenToPreset();
+            stopTimer();
+            downloading = false;
+            setBtn(btn, '⏳ 正在恢复登录', true);
+            setTimeout(() => doDownload(btn, true), 0);
+            return;
+          }
           if (siteId === 'youtube') {
             try {
               const browserInfo = await youtubeBrowserInfo(dynamicInput);
@@ -689,7 +698,7 @@
           stopTimer();
           downloading = false;
           setBtn(btn, '❌ 失败', false);
-          const errText = String(info?.error || resp.responseText || `HTTP ${resp.status}`);
+          const errText = resp.status === 401 ? authExpiredMessage() : String(info?.error || resp.responseText || `HTTP ${resp.status}`);
           toast('解析失败：' + errText.slice(0, 120), true);
           showFailureDiag({ stage:'parse-info', target: dynamicInput, http: resp.status, error: errText, body: resp.responseText, elapsed: Date.now() - started });
           setTimeout(() => setBtn(btn, btnLabel(), false), 4000);
@@ -719,12 +728,22 @@
 
   const fmtSize = n => n > 1048576 ? (n / 1048576).toFixed(1) + 'MB' : Math.max(1, Math.round(n / 1024)) + 'KB';
 
+  function authExpiredMessage() {
+    return 'OnePick 登录凭据已失效：已自动清除油猴保存的旧 Token 并重试。若仍失败，请在油猴“设置”中从 OnePick 主页重新复制配置。';
+  }
+
   function setBtn(btn, text, disabled) {
     if (!btn) return;
     if (siteId === 'x') {
-      if (text === btnLabel()) btn.innerHTML = DOWNLOAD_ICON;
-      else { btn.textContent = text; btn.title = text; }
-    } else btn.textContent = text;
+      btn.innerHTML = DOWNLOAD_ICON;
+      btn.title = text === btnLabel() ? 'OnePick' : text;
+      btn.setAttribute('aria-label', btn.title);
+      btn.dataset.onepickState = text;
+      btn.classList.toggle('onepick-is-busy', Boolean(disabled));
+      btn.style.pointerEvents = disabled ? 'none' : 'auto';
+      return;
+    }
+    btn.textContent = text;
     btn.disabled = !!disabled;
     btn.style.opacity = disabled ? '.72' : '1';
     btn.style.pointerEvents = disabled ? 'none' : 'auto';
