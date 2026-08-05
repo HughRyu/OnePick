@@ -1,6 +1,6 @@
 {
   "name": "onepick-tools",
-  "version": "2.4.63",
+  "version": "2.4.64",
   "private": true,
   "description": "OnePick Tools - modular AI-butler utility toolbox.",
   "type": "module",
@@ -14,7 +14,7 @@
     "test:twitter": "node scripts/test-twitter-parser.js",
     "test:twitter-time": "node scripts/test-twitter-download-time.js",
     "test:youtube-cookie": "node scripts/test-youtube-cookie-lifecycle.js && node scripts/test-youtube-credential-recovery.js",
-    "test:security": "node scripts/test-security-hardening.js",
+    "test:security": "node scripts/test-security-hardening.js && node scripts/test-cookie-import.js && node scripts/test-proxy-editor-ui.js",
     "test:shortcut": "node scripts/test-shortcut-regressions.js",
     "test": "npm run test:policy && npm run test:twitter && npm run test:youtube-cookie && npm run test:security && npm run test:shortcut"
   },

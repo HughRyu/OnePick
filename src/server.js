@@ -21,6 +21,7 @@ import { promoteYoutubeCandidate, withRuntimeCookieArgs, activeYoutubeMasterPath
 import { createYoutubeCredentialRecovery, runWithYoutubeCredentialRecovery } from './youtube-credential-recovery.js';
 import { runWithProxyChain, proxyEntryArgs } from './ytdlp-execution.js';
 import { mergeCookieCloudSyncState } from './cookiecloud-state.js';
+import { normalizeImportedCookieText } from './cookie-import.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -701,35 +702,7 @@ function parseCookieHeader(value, platformId) {
 }
 
 function validateCookieText(text = '', platformId = '') {
-  const value = String(text || '').trim();
-  if (!value) {
-    const error = new Error('Cookie 内容不能为空。');
-    error.statusCode = 400;
-    throw error;
-  }
-  if (value.length > 2 * 1024 * 1024) {
-    const error = new Error('Cookie 文件过大，当前限制 2MB。');
-    error.statusCode = 413;
-    throw error;
-  }
-  try {
-    if (/Netscape HTTP Cookie File/i.test(value) || /\tTRUE\t|\tFALSE\t/i.test(value)) {
-      return value.endsWith('\n') ? value : `${value}\n`;
-    }
-    if (/^\s*[\[{]/.test(value)) {
-      return parseCookieJson(value, platformId);
-    }
-    if (value.includes('=') && !value.includes('\tTRUE\t') && !value.includes('\tFALSE\t')) {
-      return parseCookieHeader(value, platformId);
-    }
-  } catch (error) {
-    const wrapped = new Error(`Cookie 格式识别失败：${error.message}`);
-    wrapped.statusCode = 400;
-    throw wrapped;
-  }
-  const error = new Error('未识别的 Cookie 格式。现在支持 Netscape cookies.txt、浏览器扩展 JSON 导出、以及 name=value; name2=value2 Cookie Header。');
-  error.statusCode = 400;
-  throw error;
+  return normalizeImportedCookieText(text, platformId);
 }
 
 

@@ -552,6 +552,16 @@ code { background: var(--surface-soft); border: 1px solid var(--line-soft); bord
 #view-env .proxy-backup-row { display: flex; gap: 8px; align-items: center; }
 #view-env .proxy-backup-row .proxy-input { flex: 1; min-width: 0; }
 #view-env .proxy-backup-del { flex: none; min-width: 64px; }
+#view-env .proxy-saved-box {
+  background: #f8faf9;
+  border-color: rgba(35,95,76,.28);
+  color: #235f4c;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  cursor: copy;
+  box-shadow: inset 0 0 0 1px rgba(159,219,196,.14);
+}
+#view-env .proxy-saved-box:focus { border-color: var(--mint); box-shadow: 0 0 0 3px rgba(159,219,196,.22); }
+#view-env .proxy-editing-box { background: #fffdf7; border-color: #d8b36a; }
 /* 保存按钮独占下一行、左对齐 */
 #view-env .proxy-save-row { margin-top: 4px; }
 #view-env .mini-button.ghost { background: #fff; color: var(--mint-ink); border: 1px dashed var(--mint); }

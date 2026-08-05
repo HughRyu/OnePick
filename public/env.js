@@ -250,11 +250,11 @@ export async function loadEnvView(force = false) {
     const proxyCurrent = document.querySelector('#proxy-current');
     if (proxyCurrent) proxyCurrent.textContent = '';
     const proxyInput = document.querySelector('#proxy-url');
-    if (proxyInput && !proxyInput.value && proxyConfig.urlMasked) proxyInput.placeholder = `已保存：${proxyConfig.urlMasked}（留空保留）`;
+    if (proxyInput && !proxyInput.value && proxyConfig.urlMasked) setSavedProxyInput(proxyInput, proxyConfig.urlMasked);
     const backupWrap = document.querySelector('#proxy-backups');
     if (backupWrap && !backupWrap.dataset.loaded) {
       backupWrap.innerHTML = '';
-      (proxyConfig.backupEntries || []).forEach(entry => addBackupProxyRow('', `已保存：${entry.masked}（留空保留）`, entry.id));
+      (proxyConfig.backupEntries || []).forEach(entry => addBackupProxyRow('', '', entry.id, entry.masked));
       backupWrap.dataset.loaded = '1';
     }
     // CookieCloud 状态 + 预填：只信 /api/cookiecloud 完整配置；保存中不让旧响应覆盖用户刚选的 interval
@@ -365,8 +365,36 @@ async function clearHistory() {
 }
 
 // ============ 代理 ============
+function setSavedProxyInput(input, masked) {
+  input.value = masked;
+  input.readOnly = true;
+  input.dataset.saved = '1';
+  input.dataset.masked = masked;
+  input.classList.add('proxy-saved-box');
+  input.title = '单击复制脱敏地址；双击后输入新的代理地址';
+  input.addEventListener('click', async () => {
+    if (!input.readOnly) return;
+    try {
+      await navigator.clipboard.writeText(input.value);
+      flashStatus('#proxy-status', '已复制脱敏代理地址。', 'ok');
+    } catch {
+      input.select();
+    }
+  });
+  input.addEventListener('dblclick', event => {
+    event.preventDefault();
+    input.readOnly = false;
+    input.dataset.saved = '0';
+    input.value = '';
+    input.placeholder = '输入新的代理地址；留空保存则保留原值';
+    input.classList.remove('proxy-saved-box');
+    input.classList.add('proxy-editing-box');
+    input.focus();
+  }, { once: true });
+}
+
 // 备用代理行：动态添加/删除
-function addBackupProxyRow(value = '', placeholder = 'socks5://备用代理:端口', entryId = '') {
+function addBackupProxyRow(value = '', placeholder = 'socks5://备用代理:端口', entryId = '', masked = '') {
   const wrap = document.querySelector('#proxy-backups');
   if (!wrap) return;
   const row = document.createElement('div');
@@ -374,8 +402,10 @@ function addBackupProxyRow(value = '', placeholder = 'socks5://备用代理:端�
   if (entryId) row.dataset.entryId = entryId;
   row.innerHTML = `<input class="proxy-input full proxy-backup-input" type="text" autocomplete="off" />
     <button class="mini-button danger proxy-backup-del" type="button">删除</button>`;
-  row.querySelector('.proxy-backup-input').placeholder = placeholder;
-  row.querySelector('.proxy-backup-input').value = value;
+  const input = row.querySelector('.proxy-backup-input');
+  input.placeholder = placeholder;
+  input.value = value;
+  if (masked) setSavedProxyInput(input, masked);
   row.querySelector('.proxy-backup-del').addEventListener('click', () => row.remove());
   wrap.appendChild(row);
 }
@@ -383,17 +413,20 @@ function addBackupProxyRow(value = '', placeholder = 'socks5://备用代理:端�
 function collectBackupEdits() {
   const rows = Array.from(document.querySelectorAll('.proxy-backup-row'));
   return {
-    keepBackupIds: rows.map(row => row.dataset.entryId || '').filter(Boolean),
-    backups: rows.map(row => row.querySelector('.proxy-backup-input')?.value.trim() || '').filter(Boolean)
+    keepBackupIds: rows.filter(row => row.querySelector('.proxy-backup-input')?.dataset.saved === '1').map(row => row.dataset.entryId || '').filter(Boolean),
+    backups: rows.map(row => {
+      const input = row.querySelector('.proxy-backup-input');
+      return input?.dataset.saved === '1' ? '' : (input?.value.trim() || '');
+    }).filter(Boolean)
   };
 }
 
 async function saveProxy() {
   const input = document.querySelector('#proxy-url');
   const status = document.querySelector('#proxy-status');
-  const url = input?.value?.trim() || '';
+  const url = input?.dataset.saved === '1' ? '' : (input?.value?.trim() || '');
   const { backups, keepBackupIds } = collectBackupEdits();
-  if (!url && !input?.placeholder?.startsWith('已保存：')) { flashStatus('#proxy-status', '请先填写主代理地址。', 'warn'); return; }
+  if (!url && input?.dataset.saved !== '1') { flashStatus('#proxy-status', '请先填写主代理地址。', 'warn'); return; }
   flashStatus('#proxy-status', '保存中...', '');
   try {
     const response = await fetch('/api/proxy', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ url, backups, keepBackupIds, enabled: true }) });
@@ -402,6 +435,7 @@ async function saveProxy() {
     const bc = payload.proxy?.backupCount || 0;
     flashStatus('#proxy-status', `已启用${bc ? `，备用 ${bc} 条` : ''}`, 'ok');
     if (input && url) input.value = '';
+    if (input) { input.dataset.saved = ''; input.classList.remove('proxy-saved-box', 'proxy-editing-box'); input.readOnly = false; }
     const wrap = document.querySelector('#proxy-backups');
     if (wrap) delete wrap.dataset.loaded;
     loadEnvView(true);
