@@ -9,12 +9,11 @@ const MOBILE_UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleW
 // 每个平台的 yt-dlp 专属额外参数（UA/referer/extractor-args 调优）。
 // key = platform.id（与 PLATFORM_PATTERNS 一致）。
 export const YTDLP_PLATFORM_CONFIG = {
-  youtube: {
-    referer: 'https://www.youtube.com/',
-    ua: DESKTOP_UA,
-    // YouTube 需要 JS 运行时解 nsig + 远程组件
-    extra: ['--extractor-args', 'youtube:player_client=web', '--js-runtimes', 'node:/usr/local/bin/node', '--remote-components', 'ejs:github']
-  },
+  // Keep yt-dlp's current default YouTube client profile.  Forcing `web` made
+  // this deployment receive a metadata-only response (storyboards, no streams)
+  // while the default Android-VR profile returns normal formats.  The default
+  // profile is also self-contained: no remote EJS fetch/runtime is required.
+  youtube: { referer: '', ua: '', extra: [] },
   // TikTok：优先 web 客户端，避开某些默认移动客户端返回的 rehydration 数据结构缺失。
   tiktok: { referer: 'https://www.tiktok.com/', ua: DESKTOP_UA, extra: ['--impersonate', 'Chrome', '--extractor-args', 'tiktok:api_hostname=api16-normal-c-useast1a.tiktokv.com'] },
   twitter: {

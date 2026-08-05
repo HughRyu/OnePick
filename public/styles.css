@@ -590,7 +590,7 @@ code { background: var(--surface-soft); border: 1px solid var(--line-soft); bord
 #view-env .compact-desc { margin: 0 0 10px; font-size: 12px; line-height: 1.45; color: var(--muted); }
 #view-env .hint-line { margin: auto 0 0; font-size: 12px; line-height: 1.45; color: var(--muted); }
 #view-env #proxy-status,
-#view-env #cc-status { min-height: 18px; margin: 6px 0 0; font-size: 12px; line-height: 18px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#view-env #cc-status { min-height: 18px; margin: 6px 0 0; font-size: 12px; line-height: 18px; white-space: normal; overflow-wrap: anywhere; }
 #view-env #proxy-status:empty,
 #view-env #cc-status:empty { visibility: hidden; }
 #view-env #proxy-status[data-tone="ok"],

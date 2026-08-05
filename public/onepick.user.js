@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OnePick
 // @namespace    onepick
-// @version      1.41.5
+// @version      1.41.6
 // @description  在支持站点页面插入 OnePick 下载按钮；支持逐站点开关；使用浏览器原生下载器保证落盘可靠。
 // @author       Hugh
 // @match        https://*.tiktok.com/*
@@ -33,7 +33,7 @@
 
 (function () {
   'use strict';
-  const ONEPICK_USERSCRIPT_VERSION = '1.41.5';
+  const ONEPICK_USERSCRIPT_VERSION = '1.41.6';
 
   /* ===== 服务器分发时自动注入（保持原样，勿改动此两行格式） ===== */
   const PRESET_SERVER = '__ONEPICK_SERVER__';
@@ -186,6 +186,11 @@
     set server(v) { GM_setValue('op_server', v); },
     get token() { return GM_getValue('op_token', '') || preset(PRESET_TOKEN); },
     set token(v) { GM_setValue('op_token', v); },
+    tokenState() {
+      const stored = String(GM_getValue('op_token', '') || '').trim();
+      const distributed = preset(PRESET_TOKEN);
+      return { stored, distributed, active: stored || distributed };
+    },
     resetTokenToPreset() { GM_setValue('op_token', ''); return preset(PRESET_TOKEN); },
     siteOn(id) {
       const v = GM_getValue('op_site_' + id, true);
@@ -674,14 +679,7 @@
         let info = null;
         try { info = JSON.parse(resp.responseText || '{}'); } catch { }
         if (resp.status !== 200 || !info?.downloadUrl) {
-          if (resp.status === 401 && !authRetry && preset(PRESET_TOKEN)) {
-            cfg.resetTokenToPreset();
-            stopTimer();
-            downloading = false;
-            setBtn(btn, '⏳ 正在恢复登录', true);
-            setTimeout(() => doDownload(btn, true), 0);
-            return;
-          }
+          if (resp.status === 401 && retryWithPresetToken(btn, authRetry)) return;
           if (siteId === 'youtube') {
             try {
               const browserInfo = await youtubeBrowserInfo(dynamicInput);
@@ -730,6 +728,20 @@
 
   function authExpiredMessage() {
     return 'OnePick 登录凭据已失效：已自动清除油猴保存的旧 Token 并重试。若仍失败，请在油猴“设置”中从 OnePick 主页重新复制配置。';
+  }
+
+  function retryWithPresetToken(btn, authRetry) {
+    if (authRetry) return false;
+    const { stored, distributed } = cfg.tokenState();
+    // A stored custom token is the only value we can safely discard. When the
+    // distributed token itself is rejected, retrying it would only duplicate the request.
+    if (!stored || !distributed) return false;
+    cfg.resetTokenToPreset();
+    stopTimer();
+    downloading = false;
+    setBtn(btn, '⏳ 正在恢复登录', true);
+    setTimeout(() => doDownload(btn, true), 0);
+    return true;
   }
 
   function setBtn(btn, text, disabled) {

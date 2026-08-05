@@ -62,7 +62,7 @@ function flashStatus(selector, message, tone = '') {
     el._clearTimer = setTimeout(() => {
       el.textContent = '';
       el.dataset.tone = '';
-    }, 2800);
+    }, 12000);
   }
 }
 
@@ -365,6 +365,16 @@ async function clearHistory() {
 }
 
 // ============ 代理 ============
+function enterProxyEditMode(input) {
+  if (!input || input.dataset.saved !== '1') return;
+  input.readOnly = false;
+  input.dataset.editing = '1';
+  input.placeholder = '开始输入后替换已保存的脱敏地址；留空保存则保留原值';
+  input.classList.remove('proxy-saved-box');
+  input.classList.add('proxy-editing-box');
+  input.focus();
+}
+
 function setSavedProxyInput(input, masked) {
   input.value = masked;
   input.readOnly = true;
@@ -381,16 +391,17 @@ function setSavedProxyInput(input, masked) {
       input.select();
     }
   });
+  input.addEventListener('beforeinput', event => {
+    if (input.dataset.editing !== '1' || !event.inputType.startsWith('insert')) return;
+    input.value = '';
+    input.dataset.saved = '0';
+    input.dataset.editing = '';
+  });
   input.addEventListener('dblclick', event => {
     event.preventDefault();
-    input.readOnly = false;
-    input.dataset.saved = '0';
-    input.value = '';
-    input.placeholder = '输入新的代理地址；留空保存则保留原值';
-    input.classList.remove('proxy-saved-box');
-    input.classList.add('proxy-editing-box');
-    input.focus();
-  }, { once: true });
+    event.stopPropagation();
+    enterProxyEditMode(input);
+  });
 }
 
 // 备用代理行：动态添加/删除
@@ -458,7 +469,7 @@ async function testProxy() {
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(payload.error || '检测失败');
     const results = payload.results || [];
-    const text = results.map((r, i) => `${i === 0 ? '主代理' : `备用${i}`}：${r.ok ? '可用' : '不可用'}${r.latencyMs ? ` · ${r.latencyMs}ms` : ''}${r.statusCode ? ` · HTTP ${r.statusCode}` : ''}`).join('；');
+    const text = results.map((r, i) => `${i === 0 ? '主代理' : `备用${i}`}：${r.ok ? '可用' : '不可用'}${r.latencyMs ? ` · ${r.latencyMs}ms` : ''}${r.statusCode ? ` · HTTP ${r.statusCode}` : ''}${r.error ? ` · ${r.error}` : ''}`).join('；');
     flashStatus('#proxy-status', text || '未返回检测结果', payload.ok ? 'ok' : 'warn');
   } catch (error) {
     flashStatus('#proxy-status', `检测失败：${error.message}`, 'error');
