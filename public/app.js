@@ -1,5 +1,5 @@
-import { loadEnvView, loadHistoryView } from '/env.js?v=2.4.66';
-import { shouldUseBufferedBrowserDownload, shouldUseNativeDownloadBeforeFetch } from '/browser-download-policy.js?v=2.4.66';
+import { loadEnvView, loadHistoryView } from '/env.js?v=2.4.67';
+import { shouldUseBufferedBrowserDownload, shouldUseNativeDownloadBeforeFetch } from '/browser-download-policy.js?v=2.4.67';
 
 const form = document.querySelector('#parse-form');
 const cardHistoryButton = document.querySelector('.card-history-button');
@@ -15,6 +15,7 @@ const accountDialog = document.querySelector('#account-dialog');
 const accountForm = document.querySelector('#account-form');
 const accountUsername = document.querySelector('#account-username');
 const accountFormStatus = document.querySelector('#account-form-status');
+const userscriptVersion = document.querySelector('#userscript-version');
 
 let lastItems = [];
 let lastArchiveTitle = 'onepick-downloads';
@@ -219,7 +220,7 @@ function renderResult(payload) {
       <button class="mini-button reinput-button" type="button" data-reinput title="返回重新输入链接">↩ 重新输入</button>
     </div>
     <div class="result-head">
-      ${payload.cover ? `<img src="/api/image-proxy?url=${encodeURIComponent(payload.cover)}" alt="" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'cover-placeholder',innerHTML:'<img src=&quot;/logo.png?v=2.4.66&quot; alt=&quot;&quot; width=&quot;42&quot; height=&quot;42&quot; />'}))" />` : '<div class="cover-placeholder"><img src="/logo.png?v=2.4.66" alt="" width="42" height="42" /></div>'}
+      ${payload.cover ? `<img src="/api/image-proxy?url=${encodeURIComponent(payload.cover)}" alt="" onerror="this.replaceWith(Object.assign(document.createElement('div'),{className:'cover-placeholder',innerHTML:'<img src=&quot;/logo.png?v=2.4.67&quot; alt=&quot;&quot; width=&quot;42&quot; height=&quot;42&quot; />'}))" />` : '<div class="cover-placeholder"><img src="/logo.png?v=2.4.67" alt="" width="42" height="42" /></div>'}
       <div>
         <p class="eyebrow">${escapeHtml(platformName)} · ${escapeHtml(payload.engine || 'parser')}</p>
         <h3>${escapeHtml(cleanTitle(payload.title, '解析结果'))}</h3>
@@ -649,6 +650,18 @@ async function loadAccountStatus() {
     accountUser.textContent = '未登录';
   }
 }
+
+async function loadClientVersions() {
+  if (!userscriptVersion) return;
+  try {
+    const payload = await fetchJson('/api/client/versions');
+    userscriptVersion.textContent = payload.userscriptVersion ? `v${payload.userscriptVersion}` : '未知';
+  } catch {
+    userscriptVersion.textContent = '暂不可用';
+  }
+}
+
+loadClientVersions();
 
 function setAccountMenu(open) {
   if (!accountPopover || !accountTrigger) return;

@@ -527,6 +527,20 @@ function clientBaseUrl(req) {
   return host ? `${proto}://${host}` : '';
 }
 
+function userscriptVersion() {
+  try {
+    const source = fs.readFileSync(path.join(staticDir, 'onepick.user.js'), 'utf8');
+    return source.match(/^\/\/\s*@version\s+([^\s]+)\s*$/m)?.[1] || null;
+  } catch {
+    return null;
+  }
+}
+
+app.get('/api/client/versions', (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.json({ userscriptVersion: userscriptVersion(), appVersion });
+});
+
 // 油猴脚本（预填当前访问地址 + 登录账户 token）
 app.get('/client/onepick.user.js', (req, res) => {
   try {

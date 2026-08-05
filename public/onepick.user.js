@@ -33,7 +33,7 @@
 
 (function () {
   'use strict';
-  const ONEPICK_USERSCRIPT_VERSION = '1.41.3';
+  const ONEPICK_USERSCRIPT_VERSION = '1.41.4';
 
   /* ===== 服务器分发时自动注入（保持原样，勿改动此两行格式） ===== */
   const PRESET_SERVER = '__ONEPICK_SERVER__';
