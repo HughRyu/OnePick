@@ -732,6 +732,18 @@ document.querySelector('#logout-button')?.addEventListener('click', async () => 
   location.href = '/login';
 });
 
+const brandLink = document.querySelector('.brand[data-github-url]');
+brandLink?.addEventListener('dblclick', event => {
+  event.preventDefault();
+  event.stopPropagation();
+  const githubUrl = brandLink.dataset.githubUrl;
+  if (githubUrl) window.open(githubUrl, '_blank', 'noopener,noreferrer');
+});
+brandLink?.addEventListener('click', event => {
+  // The second click of a double-click must not navigate to #parse before dblclick fires.
+  if (event.detail > 1) event.preventDefault();
+});
+
 document.querySelector('#client-userscript')?.addEventListener('click', () => {
   window.open('/client/installer/onepick.user.js', '_blank');
 });
