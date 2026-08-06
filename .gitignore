@@ -16,5 +16,12 @@ cookies/youtube.source.txt*
 backups/
 dist/
 .DS_Store
-__pycache__/
-*.py[cod]
+
+# Local runtime state and accidental editor/build artifacts.
+data/*.json
+data/.*
+*.bak
+*.bak-*
+*.pyc
+scripts/__pycache__/
+.hermes/

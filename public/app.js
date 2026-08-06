@@ -733,7 +733,7 @@ document.querySelector('#logout-button')?.addEventListener('click', async () => 
 });
 
 document.querySelector('#client-userscript')?.addEventListener('click', () => {
-  window.open('/client/onepick.user.js', '_blank');
+  window.open('/client/installer/onepick.user.js', '_blank');
 });
 
 document.querySelector('#client-shortcut')?.addEventListener('click', () => {

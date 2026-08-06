@@ -512,6 +512,24 @@ app.get('/api/health', (req, res) => {
   res.json({ ok: true, service: 'OnePick Tools', version: appVersion, authEnabled, time: new Date().toISOString() });
 });
 
+// Public userscript metadata/update source. It contains no account token: only the
+// authenticated installer endpoint below is allowed to mint a preconfigured script.
+app.get('/client/onepick.user.js', (req, res) => {
+  try {
+    const raw = fs.readFileSync(path.join(staticDir, 'onepick.user.js'), 'utf8');
+    res.set('Content-Type', 'application/javascript; charset=utf-8');
+    res.set('Cache-Control', 'public, max-age=300');
+    res.send(raw);
+  } catch (error) {
+    res.status(500).json({ error: '油猴脚本读取失败: ' + error.message });
+  }
+});
+
+app.get('/api/client/versions', (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  res.json({ userscriptVersion: userscriptVersion(), appVersion });
+});
+
 app.use(requireAuth);
 
 app.post('/api/auth/token', (req, res) => {
@@ -536,13 +554,15 @@ function userscriptVersion() {
   }
 }
 
+// Update metadata must be public: Tampermonkey checks @updateURL without a OnePick login.
+// The generated installer remains authenticated because it embeds the account token.
 app.get('/api/client/versions', (req, res) => {
   res.set('Cache-Control', 'no-store');
   res.json({ userscriptVersion: userscriptVersion(), appVersion });
 });
 
-// 油猴脚本（预填当前访问地址 + 登录账户 token）
-app.get('/client/onepick.user.js', (req, res) => {
+// 油猴脚本安装器（预填当前访问地址 + 登录账户 token；必须认证，避免泄露个人 token）
+app.get('/client/installer/onepick.user.js', (req, res) => {
   try {
     const raw = fs.readFileSync(path.join(staticDir, 'onepick.user.js'), 'utf8');
     const server = clientBaseUrl(req);

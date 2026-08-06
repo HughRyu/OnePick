@@ -21,4 +21,6 @@ COPY --chown=onepick:onepick public ./public
 COPY --chown=onepick:onepick scripts ./scripts
 USER onepick
 EXPOSE 3000
-CMD ["npm", "start"]
+# Run Node directly so Docker delivers SIGTERM to the application, not an npm wrapper.
+# This avoids npm reporting an expected supervisor stop as "npm error".
+CMD ["node", "src/server.js"]

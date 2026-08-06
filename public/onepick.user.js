@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OnePick
 // @namespace    onepick
-// @version      1.41.7
+// @version      1.41.8
 // @description  在支持站点页面插入 OnePick 下载按钮；支持逐站点开关；使用浏览器原生下载器保证落盘可靠。
 // @author       Hugh
 // @match        https://*.tiktok.com/*
@@ -33,7 +33,7 @@
 
 (function () {
   'use strict';
-  const ONEPICK_USERSCRIPT_VERSION = '1.41.7';
+  const ONEPICK_USERSCRIPT_VERSION = '1.41.8';
   // A backend parse performs at most two 60s proxy attempts; keep a small margin
   // but never leave a browser button spinning for several minutes.
   const PARSE_INFO_TIMEOUT_MS = 75_000;
@@ -647,7 +647,7 @@
             const raw = err && (err.error || err.details || err.message) ? (err.error || err.details || err.message) : '下载失败';
             const code = String(raw || '').toLowerCase();
             const msg = code === 'xhr_failed' || code.includes('xhr_failed')
-              ? '浏览器下载请求被中断（xhr_failed）；OnePick 服务端已完成解析，已自动改用浏览器原生下载重试。'
+              ? '浏览器下载请求被中断（xhr_failed）；下载阶段可能被服务端或浏览器中止，已自动改用浏览器原生下载重试。'
               : raw;
             toast('下载失败：' + String(msg).slice(0, 120), true);
             showFailureDiag({ stage:'gm-download', target: dynamicInput, error: String(msg), filename: selectedName, quality: selected.label || selected.quality, elapsed: Date.now() - started });
@@ -1063,7 +1063,6 @@
 
   function removeYoutubeShortsButtons() {
     document.querySelectorAll('.onepick-youtube-shorts,.onepick-youtube-float').forEach(x => x.remove());
-    document.getElementById(BTN_ID)?.remove();
   }
 
   function injectYoutube() {

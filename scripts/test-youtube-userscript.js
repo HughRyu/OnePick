@@ -48,6 +48,9 @@ assert.ok(!source.includes("GM_registerMenuCommand('YouTube 浏览器解析'"), 
 assert.match(source, /anchor\.insertBefore\(button, likeItem\)/, 'Shorts button must be inserted above Like');
 assert.match(source, /async function youtubeBrowserInfo\(/, 'YouTube must have browser-session fallback');
 assert.match(source, /await youtubeBrowserInfo\(dynamicInput\)/, 'parse failure must invoke browser-session fallback');
+assert.match(source, /function removeYoutubeShortsButtons\(\)[\s\S]*document\.querySelectorAll\('\.onepick-youtube-shorts,\.onepick-youtube-float'\)\.forEach\(x => x\.remove\(\)\);\s*\}/, 'YouTube reinjection must remove only stale Shorts buttons');
+const youtubeCleanup = source.match(/function removeYoutubeShortsButtons\(\)[\s\S]*?\n  \}/)?.[0] || '';
+assert.doesNotMatch(youtubeCleanup, /getElementById\(BTN_ID\)/, 'YouTube watch button must survive MutationObserver reinjection');
 assert.ok(source.includes('(menuInput || explicitInput || liveInput || lastContextUrl || pageInputUrl())'), 'bound button URL must win over live feed scan');
 assert.ok(source.includes("lastContextUrl = '';\n      lastContextElement = null;\n      lastContextTitle = '';"), 'SPA navigation must clear stale context');
 assert.ok(source.includes('a.download = selectedName;'), 'browser fallback must preserve the selected filename');
