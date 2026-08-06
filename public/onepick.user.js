@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         OnePick
 // @namespace    onepick
-// @version      1.41.6
+// @version      1.41.7
 // @description  在支持站点页面插入 OnePick 下载按钮；支持逐站点开关；使用浏览器原生下载器保证落盘可靠。
 // @author       Hugh
 // @match        https://*.tiktok.com/*
@@ -33,7 +33,10 @@
 
 (function () {
   'use strict';
-  const ONEPICK_USERSCRIPT_VERSION = '1.41.6';
+  const ONEPICK_USERSCRIPT_VERSION = '1.41.7';
+  // A backend parse performs at most two 60s proxy attempts; keep a small margin
+  // but never leave a browser button spinning for several minutes.
+  const PARSE_INFO_TIMEOUT_MS = 75_000;
 
   /* ===== 服务器分发时自动注入（保持原样，勿改动此两行格式） ===== */
   const PRESET_SERVER = '__ONEPICK_SERVER__';
@@ -256,7 +259,7 @@
     if (!href || typeof GM_xmlhttpRequest !== 'function') return;
     infoPending.set(key, true);
     GM_xmlhttpRequest({
-      method: 'GET', url: href, timeout: 180000,
+      method: 'GET', url: href, timeout: PARSE_INFO_TIMEOUT_MS,
       onload: resp => {
         infoPending.delete(key);
         try { const info = JSON.parse(resp.responseText || '{}'); if (resp.status === 200 && info?.downloadUrl) infoCache.set(key, { info, at: Date.now() }); } catch {}
@@ -674,12 +677,25 @@
     GM_xmlhttpRequest({
       method: 'GET',
       url: infoHref,
-      timeout: 180000,
+      timeout: PARSE_INFO_TIMEOUT_MS,
       onload: async resp => {
         let info = null;
         try { info = JSON.parse(resp.responseText || '{}'); } catch { }
         if (resp.status !== 200 || !info?.downloadUrl) {
           if (resp.status === 401 && retryWithPresetToken(btn, authRetry)) return;
+          // A 401 is an auth configuration failure, not a YouTube extractor
+          // failure. Do not spend more time on browser fallback; always release
+          // the button so it cannot display an endless parsing counter.
+          if (resp.status === 401) {
+            stopTimer();
+            downloading = false;
+            setBtn(btn, '❌ 登录失效', false);
+            const errText = authExpiredMessage();
+            toast('解析失败：' + errText, true);
+            showFailureDiag({ stage:'parse-info-auth', target: dynamicInput, http: resp.status, error: errText, body: resp.responseText, elapsed: Date.now() - started });
+            setTimeout(() => setBtn(btn, btnLabel(), false), 4000);
+            return;
+          }
           if (siteId === 'youtube') {
             try {
               const browserInfo = await youtubeBrowserInfo(dynamicInput);
