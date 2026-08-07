@@ -440,6 +440,21 @@ app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true, limit: '1mb' }));
 app.use(express.text({ type: 'text/plain', limit: '2mb' }));
 
+const globalRateLimit = new Map();
+const globalWindowMs = 60 * 1000;
+const globalMaxRequests = 200;
+app.use((req, res, next) => {
+  const ip = String(req.socket?.remoteAddress || '').replace(/^::ffff:/, '');
+  const now = Date.now();
+  const hits = (globalRateLimit.get(ip) || []).filter(ts => now - ts < globalWindowMs);
+  if (hits.length >= globalMaxRequests) {
+    return res.status(429).json({ error: 'Too many requests, please try again later.' });
+  }
+  hits.push(now);
+  globalRateLimit.set(ip, hits);
+  next();
+});
+
 const loginAttempts = new Map();
 const loginWindowMs = 15 * 60 * 1000;
 const loginMaxAttempts = 10;
