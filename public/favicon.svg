@@ -1,12 +1,46 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="OnePick">
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-labelledby="title desc">
+  <title id="title">OnePick playful save</title>
+  <desc id="desc">A playful blue media card held securely in a soft mint pocket.</desc>
   <defs>
-    <linearGradient id="g" x1="28" y1="28" x2="100" y2="100" gradientUnits="userSpaceOnUse"><stop offset="0" stop-color="#244C9A"/><stop offset=".52" stop-color="#1496A3"/><stop offset="1" stop-color="#8FD34F"/></linearGradient>
-    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%"><feDropShadow dx="0" dy="3" stdDeviation="3" flood-color="#16352d" flood-opacity=".16"/></filter>
+    <linearGradient id="bg" x1="104" y1="76" x2="920" y2="947" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#F1FAF5"/><stop offset="1" stop-color="#CDEBDD"/>
+    </linearGradient>
+    <linearGradient id="card" x1="362" y1="232" x2="665" y2="594" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#3FAFB7"/><stop offset="1" stop-color="#176C8D"/>
+    </linearGradient>
+    <linearGradient id="back" x1="218" y1="488" x2="805" y2="837" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#AEE1C8"/><stop offset="1" stop-color="#54AB87"/>
+    </linearGradient>
+    <linearGradient id="lip" x1="233" y1="632" x2="791" y2="857" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#DFF7E8"/><stop offset="1" stop-color="#83CCAA"/>
+    </linearGradient>
+    <filter id="baseShadow" x="-25%" y="-25%" width="150%" height="160%"><feDropShadow dx="0" dy="14" stdDeviation="10" flood-color="#4A8F79" flood-opacity=".18"/></filter>
+    <filter id="cardShadow" x="-26%" y="-28%" width="152%" height="158%"><feDropShadow dx="0" dy="9" stdDeviation="6" flood-color="#1B5964" flood-opacity=".19"/></filter>
   </defs>
-  <rect x="0" y="0" width="128" height="128" rx="30" fill="#f5f2e9"/>
-  <g transform="translate(18 16) scale(.72)" filter="url(#shadow)">
-    <path d="M46 28c8-9 21-13 34-10v72c0 11-7 20-18 23l-12 3V48l-20 8 2-12c1-5 7-9 14-16Z" fill="url(#g)"/>
-    <path d="M8 86c21 2 41-2 60-11 22-11 40-28 56-52l7 28c-18 24-40 40-67 49-21 7-41 8-61 4Z" fill="url(#g)"/>
-    <circle cx="96" cy="28" r="13" fill="#8FD34F"/>
+
+  <!-- quiet opaque launcher background -->
+  <rect width="1024" height="1024" fill="url(#bg)"/>
+
+  <!-- soft pocket back: matte, not translucent -->
+  <g filter="url(#baseShadow)">
+    <path d="M204 590c0-66 54-120 120-120h376c66 0 120 54 120 120v142c0 73-59 132-132 132H336c-73 0-132-59-132-132V590Z" fill="url(#back)"/>
+    <!-- one shallow inside fold, not a glossy opening -->
+    <path d="M251 592c22-38 58-57 105-57h312c47 0 83 19 105 57-29-16-60-24-95-24H346c-35 0-66 8-95 24Z" fill="#3B9074" opacity=".16"/>
+  </g>
+
+  <!-- card: a stable little tilt gives character, while the pocket holds its lower third -->
+  <g transform="rotate(-4 512 430)" filter="url(#cardShadow)">
+    <rect x="348" y="242" width="328" height="358" rx="98" fill="url(#card)"/>
+    <!-- one compact matte highlight from upper-left -->
+    <path d="M392 273c51-22 111-18 153 10-54-2-101 13-138 46-19-15-25-35-15-56Z" fill="#B8F5E8" opacity=".24"/>
+    <!-- playful but restrained media cue: a punched rounded play shape -->
+    <path d="M483 363c0-17 19-28 34-18l71 45c15 9 15 31 0 40l-71 45c-15 10-34-1-34-18V363Z" fill="#DDF8EE" opacity=".92"/>
+  </g>
+
+  <!-- foreground lip: intentionally a soft holder, asymmetric enough to feel playful -->
+  <g filter="url(#baseShadow)">
+    <path d="M221 638c37 19 74 29 115 29h347c45 0 83-11 120-32v97c0 73-59 132-132 132H353c-73 0-132-59-132-132v-94Z" fill="url(#lip)"/>
+    <!-- one light fold, not glass shine -->
+    <path d="M245 653c30 14 62 21 97 21h339c36 0 69-8 99-23-25 27-57 40-97 40H340c-39 0-71-13-95-38Z" fill="#F8FFF9" opacity=".32"/>
   </g>
 </svg>
