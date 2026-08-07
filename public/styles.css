@@ -61,7 +61,7 @@ button, textarea, input { font: inherit; }
 }
 .brand { display: inline-flex; align-items: center; gap: 10px; font-weight: 700; font-size: 16px; }
 .brand-mark {
-  display:block;width:44px;height:34px;padding:0;border-radius:0;object-fit:contain;background:transparent;box-shadow:none;
+  display:block;width:34px;height:34px;padding:0;border-radius:11px;object-fit:cover;overflow:hidden;background:transparent;box-shadow:none;
 }
 .nav-links { display: flex; align-items: center; gap: 4px; color: var(--muted); font-size: 14px; }
 .nav-links a, .tab-link { display:inline-flex; align-items:center; gap:6px; border-radius: var(--radius-pill); padding: 8px 13px; font-weight: 500; transition: background .16s ease, color .16s ease; }
