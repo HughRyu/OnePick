@@ -45,24 +45,29 @@ function safeFilename(title, ext = 'mp4') {
   return `${title || 'douyin-video'}`.replace(/[\\/:*?"<>|\n\r]+/g, '_').slice(0, 80) + `.${ext}`;
 }
 
-function pickUrlList(...candidates) {
+function pickUrlCandidates(...candidates) {
+  const urls = [];
   for (const candidate of candidates) {
     if (!candidate) continue;
     if (Array.isArray(candidate)) {
-      const found = candidate.find(Boolean);
-      if (found) return found;
+      urls.push(...candidate.filter(Boolean));
+      continue;
     }
     if (Array.isArray(candidate.url_list)) {
-      const found = candidate.url_list.find(Boolean);
-      if (found) return found;
+      urls.push(...candidate.url_list.filter(Boolean));
+      continue;
     }
     if (Array.isArray(candidate.urlList)) {
-      const found = candidate.urlList.find(Boolean);
-      if (found) return found;
+      urls.push(...candidate.urlList.filter(Boolean));
+      continue;
     }
-    if (candidate.url) return candidate.url;
+    if (candidate.url) urls.push(candidate.url);
   }
-  return '';
+  return [...new Set(urls.map(normalizeMediaUrl).filter(url => /^https?:\/\//i.test(url)))];
+}
+
+function pickUrlList(...candidates) {
+  return pickUrlCandidates(...candidates)[0] || '';
 }
 
 function normalizeMediaUrl(url = '') {
@@ -70,14 +75,44 @@ function normalizeMediaUrl(url = '') {
   return String(url).replace(/^http:\/\//i, 'https://');
 }
 
-function extractAwemeFromJson(json, { engine = 'douyin-direct' } = {}) {
+function extFromMediaUrl(url = '') {
+  const match = String(url).match(/\.([a-z0-9]{2,5})(?:[?#]|$)/i);
+  return (match?.[1] || 'jpg').toLowerCase() === 'jpeg' ? 'jpg' : (match?.[1] || 'jpg').toLowerCase();
+}
+
+export function extractAwemeFromJson(json, { engine = 'douyin-direct' } = {}) {
   const aweme = json?.aweme_detail || json?.aweme || json?.item || json?.data?.aweme_detail || json?.data;
   if (!aweme || typeof aweme !== 'object') return null;
+  const title = aweme.desc || aweme.preview_title || aweme.aweme_id || 'douyin-media';
+  const images = (Array.isArray(aweme.images) ? aweme.images : Array.isArray(aweme.image_list) ? aweme.image_list : [])
+    .map(image => pickUrlCandidates(image?.download_url_list, image?.url_list, image?.url))
+    .filter(urls => urls.length);
+  if (images.length) {
+    return {
+      engine,
+      title,
+      author: aweme.author?.nickname || aweme.author_user_id || '',
+      cover: images[0][0],
+      duration: null,
+      webpageUrl: aweme.share_url || (aweme.aweme_id ? `https://www.douyin.com/note/${aweme.aweme_id}` : ''),
+      items: images.map((urls, index) => ({
+        type: 'image',
+        url: urls[0],
+        urlCandidates: urls,
+        filename: safeFilename(`${title}-${index + 1}`, extFromMediaUrl(urls[0])),
+        ext: extFromMediaUrl(urls[0]),
+        formatId: engine,
+        width: aweme.images?.[index]?.width || aweme.image_list?.[index]?.width || null,
+        height: aweme.images?.[index]?.height || aweme.image_list?.[index]?.height || null,
+        filesize: null,
+        platform: 'douyin'
+      }))
+    };
+  }
   const video = aweme.video || {};
   const play = video.play_addr || video.play_addr_h264 || video.download_addr || {};
   const mediaUrl = normalizeMediaUrl(pickUrlList(play, video.bit_rate?.[0]?.play_addr));
   if (!mediaUrl) return null;
-  const title = aweme.desc || aweme.preview_title || aweme.aweme_id || 'douyin-video';
   return {
     engine,
     title,
@@ -93,7 +128,8 @@ function extractAwemeFromJson(json, { engine = 'douyin-direct' } = {}) {
       formatId: engine,
       width: video.width || null,
       height: video.height || null,
-      filesize: null
+      filesize: null,
+      platform: 'douyin'
     }]
   };
 }

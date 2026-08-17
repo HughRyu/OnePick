@@ -137,7 +137,7 @@ function extractUrls(value = '') {
 function archiveItemsFromPayload(payload) {
   return (Array.isArray(payload?.items) ? payload.items : [])
     .filter(item => item?.url)
-    .map(item => ({ url: item.url, filename: item.filename, platform: payload.platform?.id || item.platform, sourceUrl: item.sourceUrl || payload.sourceUrl || payload.resolvedUrl }));
+    .map(item => ({ url: item.url, urlCandidates: Array.isArray(item.urlCandidates) ? item.urlCandidates.slice(0, 5) : [], filename: item.filename, platform: payload.platform?.id || item.platform, sourceUrl: item.sourceUrl || payload.sourceUrl || payload.resolvedUrl }));
 }
 
 function preferenceLabel(preferences = outputPreferences) {
@@ -177,7 +177,7 @@ function renderItems(items = []) {
     const cleanName = cleanFilename(item.filename, `media-${index + 1}`);
     const downloadHref = isYtdlpEndpoint
       ? item.url
-      : `/api/download?url=${encodeURIComponent(item.url)}&filename=${encodeURIComponent(cleanName)}`;
+      : `/api/download?url=${encodeURIComponent(item.url)}&filename=${encodeURIComponent(cleanName)}&fallback=${encodeURIComponent(JSON.stringify(Array.isArray(item.urlCandidates) ? item.urlCandidates.slice(0, 5) : []))}`;
     return `
     <article class="download-item">
       <div>

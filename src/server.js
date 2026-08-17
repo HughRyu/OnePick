@@ -22,6 +22,7 @@ import { createYoutubeCredentialRecovery, runWithYoutubeCredentialRecovery } fro
 import { runWithProxyChain, proxyEntryArgs } from './ytdlp-execution.js';
 import { mergeCookieCloudSyncState } from './cookiecloud-state.js';
 import { normalizeImportedCookieText } from './cookie-import.js';
+import { candidateUrlsForItem, filenameWithContentType, parseDownloadFallback, serializeDownloadFallback } from './media-download-utils.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -64,13 +65,30 @@ function sanitizeHistoryUrl(value = '') {
   const text = String(value || '');
   try {
     const url = text.startsWith('/') ? new URL(text, 'http://onepick.local') : new URL(text);
+    const redactMediaValue = raw => {
+      const candidate = String(raw || '');
+      if (/douyinpic\.com|x-signature|signature|sig(?:nature)?=|fallback=/i.test(candidate)) return '[REDACTED_URL]';
+      return candidate;
+    };
     for (const key of [...url.searchParams.keys()]) {
       if (/token|key|cookie|signature|sign|auth|credential/i.test(key)) url.searchParams.set(key, '***');
+      else if (/^(?:url|fallback)$/i.test(key)) url.searchParams.set(key, redactMediaValue(url.searchParams.get(key)));
     }
-    const rendered = text.startsWith('/') ? `${url.pathname}${url.search}` : url.toString();
+    let rendered = text.startsWith('/') ? `${url.pathname}${url.search}` : url.toString();
+    if (/douyinpic\.com|x-signature|signature|sig(?:nature)?=/i.test(rendered)) {
+      try {
+        const mediaUrl = new URL(rendered);
+        rendered = `${mediaUrl.origin}/[REDACTED_URL]`;
+      } catch {
+        rendered = '[REDACTED_URL]';
+      }
+    }
     return rendered.slice(0, 500);
   } catch {
-    return text.replace(/([?&](?:token|key|cookie|signature|sign|auth|credential)[^=&]*=)[^&\s]+/gi, '$1***').slice(0, 500);
+    return text
+      .replace(/https?:\/\/[^\s"']*douyinpic\.com[^\s"']*/gi, '[REDACTED_URL]')
+      .replace(/([?&](?:token|key|cookie|signature|sign|auth|credential)[^=&]*=)[^&\s]+/gi, '$1***')
+      .slice(0, 500);
   }
 }
 
@@ -1991,7 +2009,7 @@ async function streamYtDlpDownload({ sourceUrl, filename, preferences, req, res,
   }
 }
 
-async function streamRemoteDownload({ targetUrl, filename, platform, req, res, next }) {
+async function streamRemoteDownload({ targetUrl, targetUrls = [], filename, platform, req, res, next, throwOnError = false }) {
   const started = Date.now();
   try {
     if (!targetUrl) {
@@ -1999,32 +2017,54 @@ async function streamRemoteDownload({ targetUrl, filename, platform, req, res, n
       error.statusCode = 400;
       throw error;
     }
-    await assertPublicUrl(targetUrl);
-    const cookiePlatform = enforceDownloadCookieRequirement(targetUrl, platform);
-
-    const controller = new AbortController();
-    const stopDeadline = createUpstreamDeadline(controller, req, res);
-    let upstream;
-    try {
-      upstream = await fetchPublicUrl(targetUrl, {
-        headers: mediaFetchHeaders(targetUrl, cookiePlatform),
-        signal: controller.signal
-      });
-    } catch (error) {
-      stopDeadline();
-      throw error;
+    const candidateTargets = [...new Set([targetUrl, ...targetUrls])].filter(url => /^https?:\/\//i.test(String(url || '')));
+    let selectedTargetUrl = '';
+    let cookiePlatform = '';
+    let controller = null;
+    let stopDeadline = () => {};
+    let upstream = null;
+    let lastError = null;
+    for (const candidateTargetUrl of candidateTargets) {
+      let candidateController = null;
+      let candidateStopDeadline = () => {};
+      try {
+        await assertPublicUrl(candidateTargetUrl);
+        const candidateCookiePlatform = enforceDownloadCookieRequirement(candidateTargetUrl, platform);
+        candidateController = new AbortController();
+        candidateStopDeadline = createUpstreamDeadline(candidateController, req, res);
+        const candidateUpstream = await fetchPublicUrl(candidateTargetUrl, {
+          headers: mediaRequestHeaders(candidateTargetUrl, candidateCookiePlatform),
+          signal: candidateController.signal
+        });
+        if (!candidateUpstream.ok || !candidateUpstream.body) {
+          const error = new Error(`下载源返回 ${candidateUpstream.status}`);
+          error.statusCode = 502;
+          lastError = error;
+          candidateStopDeadline();
+          candidateController.abort();
+          continue;
+        }
+        selectedTargetUrl = candidateTargetUrl;
+        cookiePlatform = candidateCookiePlatform;
+        controller = candidateController;
+        stopDeadline = candidateStopDeadline;
+        upstream = candidateUpstream;
+        break;
+      } catch (error) {
+        lastError = error;
+        candidateStopDeadline();
+        candidateController?.abort();
+      }
     }
-
-    if (!upstream.ok || !upstream.body) {
-      stopDeadline();
-      const error = new Error(`下载源返回 ${upstream.status}`);
-      error.statusCode = 502;
-      throw error;
-    }
+    if (!upstream) throw lastError || new Error('下载源不可用。');
+    const effectiveTargetUrl = selectedTargetUrl;
 
     const contentType = upstream.headers.get('content-type') || 'application/octet-stream';
     const clientMeta = parseClientMeta(req.query?.clientMeta);
     let resolvedFilename = filename || 'onepick-media';
+    if (String(platform || '').toLowerCase() === 'douyin' && /^image\//i.test(contentType)) {
+      resolvedFilename = filenameWithContentType(resolvedFilename, contentType);
+    }
     if (String(platform || clientMeta?.siteId || '').toLowerCase() === 'kuaishou' && clientMeta?.mediaTitle && /^(?:onepick-media|media(?:[ _-]?file)?|媒体文件)(?:\.[a-z0-9]{2,5})?$/i.test(String(resolvedFilename).trim())) {
       const ext = String(contentType).includes('video') ? 'mp4' : 'bin';
       resolvedFilename = `${clientMeta.mediaTitle}.${ext}`;
@@ -2033,12 +2073,12 @@ async function streamRemoteDownload({ targetUrl, filename, platform, req, res, n
     res.setHeader('Cache-Control', 'private, max-age=0, no-store');
 
     assertContentLength(upstream, maxRemoteDownloadBytes);
-    if (isTwitterMp4Download(targetUrl, cookiePlatform || platform, contentType, filename)) {
+    if (isTwitterMp4Download(effectiveTargetUrl, cookiePlatform || platform, contentType, filename)) {
       try {
         await runLimitedMp4Normalization(() => streamMp4WithDownloadCreationTime({ upstream, filename, res, controller }));
         appendHistory({
           kind: 'remote-download', ok: true, durationMs: Date.now() - started, processDurationMs: Date.now() - started,
-          platform: 'twitter', title: safeDownloadName(resolvedFilename), sourceUrl: targetUrl,
+          platform: 'twitter', title: safeDownloadName(resolvedFilename), sourceUrl: effectiveTargetUrl,
           clientMeta, trigger: clientMeta?.trigger || undefined
         });
       } finally {
@@ -2055,10 +2095,11 @@ async function streamRemoteDownload({ targetUrl, filename, platform, req, res, n
     stopDeadline();
     appendHistory({
       kind: 'remote-download', ok: true, durationMs: Date.now() - started, processDurationMs: Date.now() - started,
-      platform: String((platform && platform !== 'generic' ? platform : clientMeta?.siteId) || detectPlatform(targetUrl).id || 'generic'), title: safeDownloadName(resolvedFilename),
-      sourceUrl: targetUrl, clientMeta, trigger: clientMeta?.trigger || undefined
+      platform: String((platform && platform !== 'generic' ? platform : clientMeta?.siteId) || detectPlatform(effectiveTargetUrl).id || 'generic'), title: safeDownloadName(resolvedFilename),
+      sourceUrl: effectiveTargetUrl, clientMeta, trigger: clientMeta?.trigger || undefined
     });
   } catch (error) {
+    if (throwOnError) throw error;
     if (res.headersSent) {
       res.destroy(error);
       return;
@@ -2076,8 +2117,9 @@ app.get('/api/ytdlp-download', async (req, res, next) => {
 
 app.get('/api/download', async (req, res, next) => {
   const targetUrl = String(req.query.url || '');
+  const targetUrls = parseDownloadFallback(req.query.fallback);
   const filename = safeDownloadName(req.query.filename || 'onepick-media');
-  await streamRemoteDownload({ targetUrl, filename, platform: req.query.platform, req, res, next });
+  await streamRemoteDownload({ targetUrl, targetUrls, filename, platform: req.query.platform, req, res, next });
 });
 
 
@@ -2266,7 +2308,10 @@ async function sendShortcutDownload({ input, preferences, itemIndex, started, re
     const sourceUrl = shortcutUrl.searchParams.get('source') || '';
     const proxyFilename = shortcutUrl.searchParams.get('filename') || filename;
     const proxyPreferences = normalizeParsePreferences({ mode: shortcutUrl.searchParams.get('mode') || preferences.mode, quality: shortcutUrl.searchParams.get('quality') || preferences.quality });
-    await streamYtDlpDownload({ sourceUrl, filename: proxyFilename, preferences: proxyPreferences, req, res, next, iosCompatible: true });
+    // iOS supports HEVC natively. Douyin often only exposes HEVC/ByteVC1;
+    // forcing H.264 normalization here turns a fast download into a 60s+
+    // transcode and can outlive the Shortcut/Tampermonkey request window.
+    await streamYtDlpDownload({ sourceUrl, filename: proxyFilename, preferences: proxyPreferences, req, res, next, iosCompatible: parsed.platform?.id !== 'douyin' });
     return;
   }
 
@@ -2285,7 +2330,10 @@ async function sendShortcutDownload({ input, preferences, itemIndex, started, re
     throw error;
   }
 
-  await streamRemoteDownload({ targetUrl: item.url, filename, platform: item.platform || parsed.platform?.id, req, res, next });
+  const candidateUrls = candidateUrlsForItem(item);
+  const [targetUrl, ...targetUrls] = candidateUrls;
+  if (!targetUrl) throw new Error('没有找到可下载的媒体文件。');
+  await streamRemoteDownload({ targetUrl, targetUrls, filename, platform: item.platform || parsed.platform?.id, req, res, next, throwOnError: true });
 }
 
 app.post('/api/shortcut/download', async (req, res, next) => {
@@ -2375,7 +2423,8 @@ app.get('/api/shortcut/browser-download-info', async (req, res, next) => {
     if (downloadUrl.startsWith('/')) {
       downloadUrl = withToken(downloadUrl);
     } else {
-      const proxy = new URLSearchParams({ url: downloadUrl, filename, platform: String(item.platform || parsed.platform?.id || '') });
+      const fallback = serializeDownloadFallback(item.urlCandidates || []);
+      const proxy = new URLSearchParams({ url: downloadUrl, filename, platform: String(item.platform || parsed.platform?.id || ''), fallback });
       if (token) proxy.set('token', token);
       if (req.query?.clientMeta) proxy.set('clientMeta', String(req.query.clientMeta));
       downloadUrl = `/api/download?${proxy.toString()}`;
@@ -2463,6 +2512,7 @@ const runLimitedArchive = withConcurrencyLimit(2, async (req, res, next) => {
     const archiveName = safeDownloadName(req.body?.filename || 'onepick-downloads.zip');
     const limited = items.slice(0, maxArchiveItems).map((item, index) => ({
       url: String(item?.url || ''),
+      urlCandidates: candidateUrlsForItem(item),
       filename: safeDownloadName(item?.filename || `media-${index + 1}`),
       platform: String(item?.platform || item?.platformId || ''),
       sourceUrl: String(item?.sourceUrl || '')
@@ -2483,10 +2533,25 @@ const runLimitedArchive = withConcurrencyLimit(2, async (req, res, next) => {
         if (item.url.startsWith('/api/download')) {
           const q = new URLSearchParams(item.url.split('?')[1] || '');
           realUrl = q.get('url') || item.sourceUrl || item.url;
+          item.urlCandidates = [...item.urlCandidates, ...parseDownloadFallback(q.get('fallback'))];
           item.url = realUrl; // 后续 fetch 直接用真实直链
         }
-        await assertPublicUrl(realUrl);
-        item.cookiePlatform = enforceDownloadCookieRequirement(realUrl, item.platform);
+        const candidates = candidateUrlsForItem({ url: realUrl, urlCandidates: item.urlCandidates });
+        const validatedCandidates = [];
+        let lastValidationError = null;
+        for (const candidateUrl of candidates) {
+          try {
+            await assertPublicUrl(candidateUrl);
+            const candidateCookiePlatform = enforceDownloadCookieRequirement(candidateUrl, item.platform);
+            validatedCandidates.push({ url: candidateUrl, cookiePlatform: candidateCookiePlatform });
+          } catch (error) {
+            lastValidationError = error;
+          }
+        }
+        if (!validatedCandidates.length) throw lastValidationError || new Error('没有可用的公网下载地址。');
+        item.urlCandidates = validatedCandidates.map(candidate => candidate.url);
+        item.url = item.urlCandidates[0];
+        item.cookiePlatform = validatedCandidates[0].cookiePlatform;
       }
     }
 
@@ -2524,22 +2589,40 @@ const runLimitedArchive = withConcurrencyLimit(2, async (req, res, next) => {
         const controller = new AbortController();
         const stopDeadline = createUpstreamDeadline(controller, req, res);
         try {
-          const upstream = await fetchPublicUrl(item.url, {
-            headers: mediaFetchHeaders(item.url, item.cookiePlatform),
-            signal: controller.signal
-          });
-          if (!upstream.ok || !upstream.body) {
+          let upstream = null;
+          let effectiveUrl = item.url;
+          for (const candidateUrl of item.urlCandidates.length ? item.urlCandidates : [item.url]) {
+            try {
+              await assertPublicUrl(candidateUrl);
+              const candidateCookiePlatform = enforceDownloadCookieRequirement(candidateUrl, item.platform);
+              const candidateUpstream = await fetchPublicUrl(candidateUrl, {
+                headers: mediaFetchHeaders(candidateUrl, candidateCookiePlatform),
+                signal: controller.signal
+              });
+              if (candidateUpstream.ok && candidateUpstream.body) {
+                upstream = candidateUpstream;
+                effectiveUrl = candidateUrl;
+                break;
+              }
+            } catch {
+              // 候选地址逐个隔离失败；继续尝试下一地址，所有候选失败后写入归档错误项。
+            }
+          }
+          if (!upstream?.ok || !upstream?.body) {
             stopDeadline();
-            archive.append(`Failed to fetch ${item.url}: HTTP ${upstream.status}\n`, { name: `_errors/item-${index + 1}.txt` });
+            archive.append(`Failed to fetch ${effectiveUrl}: HTTP ${upstream?.status || 502}\n`, { name: `_errors/item-${index + 1}.txt` });
             continue;
           }
           const source = createLimitedUpstreamStream(upstream, maxRemoteDownloadBytes, controller, '归档文件');
+          const archiveFilename = String(item.platform || '').toLowerCase() === 'douyin'
+            ? filenameWithContentType(item.filename, upstream.headers.get('content-type') || '')
+            : item.filename;
           source.once('end', stopDeadline);
           source.once('error', error => {
             stopDeadline();
             archive.emit('error', error);
           });
-          archive.append(source, { name: item.filename });
+          archive.append(source, { name: archiveFilename });
         } catch (error) {
           stopDeadline();
           throw error;

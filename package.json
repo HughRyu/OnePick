@@ -15,7 +15,7 @@
     "test:twitter-time": "node scripts/test-twitter-download-time.js",
     "test:youtube-cookie": "node scripts/test-youtube-cookie-lifecycle.js && node scripts/test-youtube-credential-recovery.js",
     "test:security": "node scripts/test-security-hardening.js && node scripts/test-cookie-import.js && node scripts/test-proxy-editor-ui.js",
-    "test:shortcut": "node scripts/test-shortcut-regressions.js && node scripts/test-youtube-shorts-userscript.js",
+    "test:shortcut": "node scripts/test-shortcut-regressions.js && node scripts/test-youtube-shorts-userscript.js && node scripts/test-douyin-shortcut-codec-policy.js && node scripts/test-douyin-image-parser.js && node scripts/test-douyin-image-download-policy.js",
     "test": "npm run test:policy && npm run test:twitter && npm run test:youtube-cookie && npm run test:security && npm run test:shortcut"
   },
   "dependencies": {

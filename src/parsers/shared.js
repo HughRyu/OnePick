@@ -374,7 +374,7 @@ export function mediaRequestHeaders(targetUrl = '', platformId = '') {
   let host = '';
   try { host = new URL(targetUrl).hostname.toLowerCase(); } catch {}
   const rules = [
-    [['douyin.com', 'douyinvod.com', 'bytecdn.cn', 'byteimg.com'], 'https://www.douyin.com/'],
+    [['douyin.com', 'douyinvod.com', 'douyinpic.com', 'bytecdn.cn', 'byteimg.com'], 'https://www.douyin.com/'],
     [DOWNLOAD_COOKIE_DOMAINS.xiaohongshu, 'https://www.xiaohongshu.com/'],
     [DOWNLOAD_COOKIE_DOMAINS.kuaishou, 'https://www.kuaishou.com/'],
     [['bilibili.com', 'bilivideo.com'], 'https://www.bilibili.com/'],

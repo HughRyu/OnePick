@@ -13,7 +13,7 @@ assert.equal(sendBody.includes("appendHistory({ kind: 'shortcut', ok: true"), fa
 assert.match(server, /isTwitterMp4Download[\s\S]*?appendHistory\(\{[\s\S]*?kind: 'remote-download'/, 'Twitter shortcut transfer must retain one successful download history row');
 assert.match(server, /facebook[\s\S]{0,500}vcodec\^=avc1/, 'Facebook shortcut format policy must prefer iOS Photos-compatible H.264');
 assert.match(server, /audioCompatible = !audio \|\| audio\.codec_name === 'aac'/, 'iOS compatibility must validate AAC when an audio stream exists');
-assert.match(sendBody, /streamYtDlpDownload\(\{[\s\S]*iosCompatible: true/, 'iOS codec conversion must be enabled by the shortcut path');
+assert.match(sendBody, /streamYtDlpDownload\(\{[\s\S]*iosCompatible: parsed\.platform\?\.id !== 'douyin'/, 'Douyin shortcut downloads must skip the expensive H.264 conversion while other shortcut yt-dlp paths retain it');
 assert.match(server, /async function downloadYtDlpToFile\([^\n]*iosCompatible = false/, 'non-shortcut yt-dlp and archive paths must not pay the iOS conversion cost by default');
 
 console.log('shortcut regression tests passed');
