@@ -3,6 +3,7 @@ import { parseGeneric } from './generic.js';
 import { parseKuaishou } from './kuaishou.js';
 import { parseWeibo } from './weibo.js';
 import { parseDouyin } from './douyin.js';
+import { parseTwitter } from './twitter.js';
 import { makeYtDlpParser } from './ytdlp-parser.js';
 import { YTDLP_PLATFORMS } from './ytdlp-platforms.js';
 import { fetchPinterestImages, buildPinterestImageResponse } from './pinterest-image.js';
@@ -13,7 +14,7 @@ import { getCookiePath } from './shared.js';
 // 解析与下载走同一 yt-dlp 通路，保证“解析成功=能下载”。
 // 快手 yt-dlp 无 extractor，保留自研解析器兜底。
 // 自研解析器（yt-dlp 无 extractor 或需特殊处理）；不被工厂覆盖
-const DEDICATED = new Set(['douyin', 'kuaishou', 'weibo']);
+const DEDICATED = new Set(['douyin', 'twitter', 'kuaishou', 'weibo']);
 
 // Pinterest 图片回退：Pinterest 大量 pin 是图片，yt-dlp 报 "No video formats"。
 // 先试 yt-dlp（视频 pin 可用），失败/无视频时抓页面图片。
@@ -60,20 +61,9 @@ async function parseXiaohongshu({ url, platform, preferences }) {
   }
 }
 
-const ytdlpTwitter = makeYtDlpParser('twitter', {
-  preValidate(url) {
-    const parsed = new URL(url);
-    if (!/(^|\.)(?:x|twitter)\.com$/i.test(parsed.hostname) || !/^\/[^/]+\/status\/\d+/.test(parsed.pathname)) {
-      const error = new Error('这个链接不是单条推文。请粘贴具体作品链接。');
-      error.statusCode = 422;
-      throw error;
-    }
-  }
-});
-
 const PARSERS = {
   douyin: parseDouyin,
-  twitter: ytdlpTwitter,
+  twitter: parseTwitter,
   kuaishou: parseKuaishou,
   weibo: parseWeibo,
   pinterest: parsePinterest,

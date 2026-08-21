@@ -1,4 +1,4 @@
-import { buildParseResponse, hasCookieFile, normalizeParsePreferences, getCookieHeader } from './shared.js';
+import { buildParseResponse, normalizeParsePreferences } from './shared.js';
 
 export function extractTwitterStatusId(url = '') {
   const text = String(url || '');
@@ -42,9 +42,18 @@ function pickBestMp4Variant(variants = [], preferences = {}) {
     .map(item => ({ ...item, bitrate: Number(item.bitrate || 0) }))
     .sort((a, b) => b.bitrate - a.bitrate);
   if (!mp4.length) return null;
-  if (!preferences?.quality || preferences.quality === 'best') return mp4[0];
-  // Twitter syndication variants usually expose bitrate, not dimensions. Use best mp4.
+  // Syndication only reports bitrate, not a stable height ladder. Preserve the
+  // best playable MP4 for named heights; `worst` deliberately picks the lowest bitrate.
+  if (preferences?.quality === 'worst') return mp4[mp4.length - 1];
   return mp4[0];
+}
+
+function twitterPreferenceError(preferences = {}) {
+  if (preferences?.mode === 'audio') {
+    const error = new Error('X/Twitter 专用解析当前仅支持视频和图片下载，不支持单独提取音频。');
+    error.statusCode = 422;
+    throw error;
+  }
 }
 
 function extractMediaDetails(payload = {}, preferences = {}, engine = 'twitter-syndication') {
@@ -151,17 +160,14 @@ function extractVxTwitterDetails(payload = {}, preferences = {}) {
 
 function twitterDiagnosticHint(message = '') {
   const text = String(message || '');
-  const hasCookie = hasCookieFile('twitter');
   if (/login|sign in|authentication|unauthorized|forbidden|private|protected|not authorized|HTTP 401|HTTP 403/i.test(text)) {
-    return hasCookie
-      ? '已检测到 X/Twitter Cookie，但该推文可能非公开、账号无权访问，或代理出口被 X 风控。'
-      : 'X/Twitter 当前需要登录态才能访问这个视频；请配置 X/Twitter cookies.txt 后重试。';
+    return 'X/Twitter 专用解析只访问公开媒体接口；请确认推文公开可访问，且代理出口未被 X 风控。';
   }
   if (/not found|404|unavailable|does not exist|No video|empty/i.test(text)) {
-    return '请确认这是公开视频推文链接，不是用户主页、已删除推文、私密/受保护账号内容，且推文内确实包含视频。';
+    return '请确认这是包含视频或图片的公开推文链接，不是用户主页、已删除推文或私密/受保护内容。';
   }
   if (/rate limit|too many requests|429/i.test(text)) return 'X/Twitter 返回限流。建议等待或更换代理出口后重试。';
-  return hasCookie ? '请确认推文公开视频可访问；若浏览器可播放但 OnePick 失败，可能需要接入 X GraphQL 专用接口。' : '公开推文会先匿名尝试；若失败，请配置 X/Twitter Cookie 后重试。';
+  return '请确认推文包含公开媒体且代理出口可访问 X/Twitter；该专用解析器不会向第三方端点转发账户 Cookie。';
 }
 
 async function fetchSyndicationTweet(statusId) {
@@ -171,8 +177,8 @@ async function fetchSyndicationTweet(statusId) {
     'Accept': 'application/json,text/plain,*/*',
     'Referer': 'https://platform.twitter.com/'
   };
-  const cookie = getCookieHeader('twitter');
-  if (cookie) headers.Cookie = cookie;
+  // The syndication endpoint is public. Never forward X account cookies to
+  // a separate twimg.com registrable domain.
   const response = await fetch(endpoint, { redirect: 'follow', headers });
   const text = await response.text();
   if (!response.ok) throw new Error(`syndication HTTP ${response.status}`);
@@ -200,6 +206,7 @@ async function fetchVxTwitterTweet(url, statusId) {
 
 export async function parseTwitter({ url, platform, preferences }) {
   const resolvedPreferences = normalizeParsePreferences(preferences);
+  twitterPreferenceError(resolvedPreferences);
   const statusId = extractTwitterStatusId(url);
   if (isLoginOrChallenge(url)) {
     const error = new Error('X/Twitter 链接指向登录/验证页。请粘贴具体推文链接，或配置 X/Twitter Cookie 后再解析。');
@@ -217,25 +224,38 @@ export async function parseTwitter({ url, platform, preferences }) {
     throw error;
   }
 
+  const syndicationErrors = [];
+  let parsed = null;
   try {
-    let payload = await fetchSyndicationTweet(statusId);
-    let parsed = extractMediaDetails(payload, resolvedPreferences, 'twitter-syndication');
-    if (!parsed.items.length) {
-      payload = await fetchVxTwitterTweet(url, statusId);
-      parsed = extractVxTwitterDetails(payload, resolvedPreferences);
-    }
-    if (!parsed.items.length) throw new Error('empty media details');
-    return buildParseResponse({
-      parsed: { ...parsed, webpageUrl: parsed.webpageUrl || url },
-      platform,
-      sourceUrl: url,
-      resolvedUrl: url,
-      extra: { statusId, parser: 'twitter', cookieConfigured: hasCookieFile('twitter') }
-    });
+    const payload = await fetchSyndicationTweet(statusId);
+    parsed = extractMediaDetails(payload, resolvedPreferences, 'twitter-syndication');
+    if (!parsed.items.length) syndicationErrors.push('syndication: empty media details');
   } catch (error) {
-    const wrapped = new Error(`X/Twitter 暂未解析成功。${twitterDiagnosticHint(error.message)}诊断：${error.message}`);
+    syndicationErrors.push(`syndication: ${error.message}`);
+  }
+
+  if (!parsed?.items.length) {
+    try {
+      const payload = await fetchVxTwitterTweet(url, statusId);
+      parsed = extractVxTwitterDetails(payload, resolvedPreferences);
+    } catch (error) {
+      syndicationErrors.push(`vxtwitter: ${error.message}`);
+    }
+  }
+
+  if (!parsed?.items.length) {
+    const reason = syndicationErrors.join('; ') || 'empty media details';
+    const wrapped = new Error(`X/Twitter 暂未解析成功。${twitterDiagnosticHint(reason)}诊断：${reason}`);
     wrapped.statusCode = 422;
     throw wrapped;
   }
+
+  return buildParseResponse({
+    parsed: { ...parsed, webpageUrl: parsed.webpageUrl || url },
+    platform,
+    sourceUrl: url,
+    resolvedUrl: url,
+    extra: { statusId, parser: 'twitter', anonymous: true }
+  });
 }
 

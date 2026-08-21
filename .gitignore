@@ -17,6 +17,17 @@ backups/
 dist/
 .DS_Store
 
+# Private-key/certificate material must never enter the repository.
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.cer
+*.der
+*.jks
+*.keystore
+
 # Local runtime state and accidental editor/build artifacts.
 data/*.json
 data/.*
