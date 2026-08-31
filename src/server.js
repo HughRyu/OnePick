@@ -23,6 +23,7 @@ import { runWithProxyChain, proxyEntryArgs } from './ytdlp-execution.js';
 import { mergeCookieCloudSyncState } from './cookiecloud-state.js';
 import { normalizeImportedCookieText } from './cookie-import.js';
 import { candidateUrlsForItem, filenameWithContentType, parseDownloadFallback, serializeDownloadFallback } from './media-download-utils.js';
+import { createDownloadTelemetry, recordDownloadStage, recordDownloadBytes, recordDownloadBackpressure, markDownloadTermination, snapshotDownloadTelemetry } from './download-observability.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -107,7 +108,8 @@ function appendHistory(entry) {
       itemCount: entry.itemCount || 0,
       mediaDuration: entry.mediaDuration || entry.duration || null,
       processDurationMs: entry.processDurationMs || entry.durationMs || 0,
-      error: entry.error ? String(entry.error).slice(0, 1000) : ''
+      error: entry.error ? String(entry.error).slice(0, 1000) : '',
+      ...(entry.transfer ? { transfer: snapshotDownloadTelemetry(entry.transfer) } : {})
     };
     fs.appendFileSync(historyPath, JSON.stringify(safe) + '\n');
     trimHistory();
@@ -1633,6 +1635,34 @@ function contentDisposition(filename) {
   return `attachment; filename="${ascii}"; filename*=UTF-8''${encoded}`;
 }
 
+function tagDownloadError(error, reason) {
+  if (error && !error.onepickTerminationReason) error.onepickTerminationReason = reason;
+  return error;
+}
+
+function createUpstreamReadError(error) {
+  const wrapped = error instanceof Error ? error : new Error(String(error || '下载源读取失败。'));
+  return tagDownloadError(wrapped, 'upstream-error');
+}
+
+function markDownloadErrorTermination(telemetry, error) {
+  if (!telemetry || telemetry._terminated) return;
+  if (error?.statusCode === 413) {
+    markDownloadTermination(telemetry, 'size-limit');
+    return;
+  }
+  if (error?.onepickTerminationReason) {
+    markDownloadTermination(telemetry, error.onepickTerminationReason);
+    return;
+  }
+  if (error?.code === 'ERR_STREAM_PREMATURE_CLOSE' || error?.code === 'ERR_STREAM_WRITE_AFTER_END' || error?.code === 'EPIPE' || error?.code === 'ECONNRESET') {
+    markDownloadTermination(telemetry, 'downstream-write-error');
+    return;
+  }
+  // Do not falsely describe malformed requests or an unclassified local failure as an upstream fault.
+  markDownloadTermination(telemetry, telemetry?.upstreamResponseMs === null ? 'validation-error' : 'unknown');
+}
+
 function assertContentLength(response, limit, label = '下载文件') {
   const size = Number(response.headers.get('content-length') || 0);
   if (Number.isFinite(size) && size > limit) {
@@ -1642,27 +1672,117 @@ function assertContentLength(response, limit, label = '下载文件') {
   }
 }
 
-async function pipeLimitedResponse(response, res, limit, signal) {
+async function waitForWritableDrain(res, controller, telemetry) {
+  const started = performance.now();
+  const signal = controller?.signal;
+  try {
+    await new Promise((resolve, reject) => {
+      const cleanup = () => {
+        res.off('drain', onDrain);
+        res.off('close', onClose);
+        signal?.removeEventListener('abort', onAbort);
+      };
+      const onDrain = () => { cleanup(); resolve(); };
+      const onClose = () => { cleanup(); reject(tagDownloadError(new Error('客户端连接已关闭。'), 'client-close')); };
+      const onAbort = () => { cleanup(); reject(signal.reason || new Error('下载已取消。')); };
+      res.once('drain', onDrain);
+      res.once('close', onClose);
+      signal?.addEventListener('abort', onAbort, { once: true });
+      if (res.destroyed || res.writableEnded) onClose();
+      else if (signal?.aborted) onAbort();
+    });
+  } finally {
+    recordDownloadBackpressure(telemetry, performance.now() - started);
+  }
+}
+
+async function finishResponse(res, controller, telemetry) {
+  const signal = controller?.signal;
+  await new Promise((resolve, reject) => {
+    const cleanup = () => {
+      res.off('finish', onFinish);
+      res.off('close', onClose);
+      signal?.removeEventListener('abort', onAbort);
+    };
+    const onFinish = () => {
+      cleanup();
+      markDownloadTermination(telemetry, 'completed');
+      resolve();
+    };
+    const onClose = () => {
+      cleanup();
+      markDownloadTermination(telemetry, 'client-close');
+      reject(tagDownloadError(new Error('客户端连接已关闭。'), 'client-close'));
+    };
+    const onAbort = () => {
+      cleanup();
+      reject(signal.reason || new Error('下载已取消。'));
+    };
+    res.once('finish', onFinish);
+    res.once('close', onClose);
+    signal?.addEventListener('abort', onAbort, { once: true });
+    res.end();
+    if (res.destroyed) onClose();
+    else if (signal?.aborted) onAbort();
+  });
+}
+
+async function pipeLocalFileToResponse(filePath, res, controller, telemetry) {
+  let total = telemetry?.bytesForwarded || 0;
+  try {
+    for await (const chunk of fs.createReadStream(filePath)) {
+      try {
+        if (!res.write(chunk)) await waitForWritableDrain(res, controller, telemetry);
+      } catch (error) {
+        throw tagDownloadError(error, error?.onepickTerminationReason || 'downstream-write-error');
+      }
+      total += chunk.length;
+      recordDownloadBytes(telemetry, { bytesForwarded: total });
+    }
+    await finishResponse(res, controller, telemetry);
+  } catch (error) {
+    const terminalReason = error?.onepickTerminationReason || 'downstream-write-error';
+    markDownloadTermination(telemetry, terminalReason);
+    throw tagDownloadError(error, terminalReason);
+  }
+}
+
+async function pipeLimitedResponse(response, res, limit, controller, telemetry = null, transferStartedAt = performance.now()) {
   assertContentLength(response, limit);
+  recordDownloadBytes(telemetry, { declaredBytes: response.headers.get('content-length') });
   const reader = response.body?.getReader();
   if (!reader) throw new Error('下载源没有可读内容。');
   let total = 0;
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      let chunk;
+      try {
+        chunk = await reader.read();
+      } catch (error) {
+        throw tagDownloadError(error, 'upstream-error');
+      }
+      const { done, value } = chunk;
       if (done) break;
+      recordDownloadStage(telemetry, 'firstByteMs', performance.now() - transferStartedAt);
       total += value.byteLength;
+      recordDownloadBytes(telemetry, { bytesRead: total });
       if (total > limit) {
+        markDownloadTermination(telemetry, 'size-limit');
         const error = new Error('下载文件超过大小限制。');
         error.statusCode = 413;
         throw error;
       }
-      if (!res.write(Buffer.from(value))) await new Promise(resolve => res.once('drain', resolve));
+      try {
+        if (!res.write(Buffer.from(value))) await waitForWritableDrain(res, controller, telemetry);
+      } catch (error) {
+        throw tagDownloadError(error, error?.onepickTerminationReason || 'downstream-write-error');
+      }
+      recordDownloadBytes(telemetry, { bytesForwarded: total });
     }
-    res.end();
+    await finishResponse(res, controller, telemetry);
   } finally {
-    if (!res.writableEnded) await reader.cancel().catch(() => {});
-    signal?.abort();
+    if (!res.writableEnded && !res.destroyed) await reader.cancel().catch(() => {});
+    controller?.abort();
   }
 }
 
@@ -1685,15 +1805,30 @@ function createLimitedUpstreamStream(response, limit, controller, label = '下�
   }));
 }
 
-function createUpstreamDeadline(controller, req = null, res = null) {
-  const timeout = setTimeout(() => controller.abort(), Number(process.env.REMOTE_DOWNLOAD_TIMEOUT_MS || 120000));
-  const stop = () => controller.abort();
-  req?.once('aborted', stop);
-  res?.once('close', stop);
+function createUpstreamDeadline(controller, req = null, res = null, telemetry = null) {
+  const timeoutMs = Number(process.env.REMOTE_DOWNLOAD_TIMEOUT_MS || 120000);
+  const startedAt = performance.now();
+  const timeout = setTimeout(() => {
+    markDownloadTermination(telemetry, 'deadline', {
+      deadlineMs: timeoutMs,
+      deadlineLatenessMs: performance.now() - startedAt - timeoutMs
+    });
+    controller.abort();
+  }, timeoutMs);
+  const onRequestAborted = () => {
+    markDownloadTermination(telemetry, 'client-abort');
+    controller.abort();
+  };
+  const onResponseClosed = () => {
+    if (!res?.writableEnded) markDownloadTermination(telemetry, 'client-close');
+    controller.abort();
+  };
+  req?.once('aborted', onRequestAborted);
+  res?.once('close', onResponseClosed);
   return () => {
     clearTimeout(timeout);
-    req?.off('aborted', stop);
-    res?.off('close', stop);
+    req?.off('aborted', onRequestAborted);
+    res?.off('close', onResponseClosed);
   };
 }
 
@@ -1740,16 +1875,40 @@ const runLimitedMp4Normalization = withAsyncConcurrencyLimit(maxConcurrentMp4Nor
 
 function isMp4NormalizationFallbackError(error) {
   const code = String(error?.code || '');
-  return !error?.statusCode && error?.name !== 'AbortError' && code !== '20' && code !== 'ABORT_ERR' && code !== 'ERR_STREAM_PREMATURE_CLOSE';
+  return !error?.onepickTerminationReason && !error?.statusCode && error?.name !== 'AbortError' && code !== '20' && code !== 'ABORT_ERR' && code !== 'ERR_STREAM_PREMATURE_CLOSE';
 }
 
-async function streamMp4WithDownloadCreationTime({ upstream, filename, res, controller }) {
+async function createTelemetryLimitedUpstreamStream(response, limit, controller, telemetry, transferStartedAt, label = '下载文件') {
+  assertContentLength(response, limit, label);
+  recordDownloadBytes(telemetry, { declaredBytes: response.headers.get('content-length') });
+  if (!response.body) throw new Error('下载源没有可读内容。');
+  let total = 0;
+  const upstream = Readable.fromWeb(response.body);
+  upstream.on('error', createUpstreamReadError);
+  return upstream.pipe(new Transform({
+    transform(chunk, _encoding, callback) {
+      recordDownloadStage(telemetry, 'firstByteMs', performance.now() - transferStartedAt);
+      total += chunk.length;
+      recordDownloadBytes(telemetry, { bytesRead: total });
+      if (total > limit) {
+        const error = tagDownloadError(new Error(`${label}超过大小限制。`), 'size-limit');
+        error.statusCode = 413;
+        controller?.abort();
+        callback(error);
+        return;
+      }
+      callback(null, chunk);
+    }
+  }));
+}
+
+async function streamMp4WithDownloadCreationTime({ upstream, filename, res, controller, telemetry = null, transferStartedAt = performance.now() }) {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'onepick-mp4-time-'));
   const inputPath = path.join(tempDir, 'input.mp4');
   const outputPath = path.join(tempDir, 'output.mp4');
   const creationTime = new Date().toISOString();
   try {
-    await pipeline(createLimitedUpstreamStream(upstream, maxMp4NormalizationInputBytes, controller, 'MP4 文件'), fs.createWriteStream(inputPath));
+    await pipeline(await createTelemetryLimitedUpstreamStream(upstream, maxMp4NormalizationInputBytes, controller, telemetry, transferStartedAt, 'MP4 文件'), fs.createWriteStream(inputPath));
     if (fs.statSync(inputPath).size > maxMp4NormalizationInputBytes) {
       const error = new Error('MP4 文件超过大小限制。');
       error.statusCode = 413;
@@ -1774,7 +1933,7 @@ async function streamMp4WithDownloadCreationTime({ upstream, filename, res, cont
     res.setHeader('Content-Length', String(fs.statSync(outputPath).size));
     res.setHeader('X-OnePick-Creation-Time', creationTime);
     res.setHeader('X-OnePick-Metadata-Normalized', 'creation_time');
-    await pipeline(fs.createReadStream(outputPath), res);
+    await pipeLocalFileToResponse(outputPath, res, controller, telemetry);
   } catch (error) {
     if (res.headersSent || !isMp4NormalizationFallbackError(error)) throw error;
     // Only a compatible ffmpeg metadata failure may fall back; size limits and cancellation must fail closed.
@@ -1782,7 +1941,7 @@ async function streamMp4WithDownloadCreationTime({ upstream, filename, res, cont
     if (fs.existsSync(inputPath) && fs.statSync(inputPath).size <= maxMp4NormalizationInputBytes) {
       res.setHeader('Content-Type', 'video/mp4');
       res.setHeader('Content-Length', String(fs.statSync(inputPath).size));
-      await pipeline(fs.createReadStream(inputPath), res);
+      await pipeLocalFileToResponse(inputPath, res, controller, telemetry);
       return;
     }
     throw error;
@@ -2009,8 +2168,12 @@ async function streamYtDlpDownload({ sourceUrl, filename, preferences, req, res,
   }
 }
 
-async function streamRemoteDownload({ targetUrl, targetUrls = [], filename, platform, req, res, next, throwOnError = false }) {
+async function streamRemoteDownload({ targetUrl, targetUrls = [], filename, platform, req, res, next, throwOnError = false, telemetryContext = {} }) {
   const started = Date.now();
+  const transferStartedAt = performance.now();
+  const transfer = createDownloadTelemetry({ parseMs: telemetryContext.parseMs });
+  let controller = null;
+  let stopDeadline = () => {};
   try {
     if (!targetUrl) {
       const error = new Error('缺少 url 参数。');
@@ -2020,8 +2183,6 @@ async function streamRemoteDownload({ targetUrl, targetUrls = [], filename, plat
     const candidateTargets = [...new Set([targetUrl, ...targetUrls])].filter(url => /^https?:\/\//i.test(String(url || '')));
     let selectedTargetUrl = '';
     let cookiePlatform = '';
-    let controller = null;
-    let stopDeadline = () => {};
     let upstream = null;
     let lastError = null;
     for (const candidateTargetUrl of candidateTargets) {
@@ -2031,19 +2192,25 @@ async function streamRemoteDownload({ targetUrl, targetUrls = [], filename, plat
         await assertPublicUrl(candidateTargetUrl);
         const candidateCookiePlatform = enforceDownloadCookieRequirement(candidateTargetUrl, platform);
         candidateController = new AbortController();
-        candidateStopDeadline = createUpstreamDeadline(candidateController, req, res);
-        const candidateUpstream = await fetchPublicUrl(candidateTargetUrl, {
-          headers: mediaRequestHeaders(candidateTargetUrl, candidateCookiePlatform),
-          signal: candidateController.signal
-        });
+        candidateStopDeadline = createUpstreamDeadline(candidateController, req, res, transfer);
+        let candidateUpstream;
+        try {
+          candidateUpstream = await fetchPublicUrl(candidateTargetUrl, {
+            headers: mediaRequestHeaders(candidateTargetUrl, candidateCookiePlatform),
+            signal: candidateController.signal
+          });
+        } catch (error) {
+          throw tagDownloadError(error, 'upstream-error');
+        }
         if (!candidateUpstream.ok || !candidateUpstream.body) {
-          const error = new Error(`下载源返回 ${candidateUpstream.status}`);
+          const error = tagDownloadError(new Error(`下载源返回 ${candidateUpstream.status}`), 'upstream-error');
           error.statusCode = 502;
           lastError = error;
           candidateStopDeadline();
           candidateController.abort();
           continue;
         }
+        recordDownloadStage(transfer, 'upstreamResponseMs', performance.now() - transferStartedAt);
         selectedTargetUrl = candidateTargetUrl;
         cookiePlatform = candidateCookiePlatform;
         controller = candidateController;
@@ -2072,14 +2239,21 @@ async function streamRemoteDownload({ targetUrl, targetUrls = [], filename, plat
     res.setHeader('Content-Disposition', contentDisposition(resolvedFilename));
     res.setHeader('Cache-Control', 'private, max-age=0, no-store');
 
-    assertContentLength(upstream, maxRemoteDownloadBytes);
+    try {
+      assertContentLength(upstream, maxRemoteDownloadBytes);
+    } catch (error) {
+      markDownloadTermination(transfer, 'size-limit');
+      throw error;
+    }
     if (isTwitterMp4Download(effectiveTargetUrl, cookiePlatform || platform, contentType, filename)) {
       try {
-        await runLimitedMp4Normalization(() => streamMp4WithDownloadCreationTime({ upstream, filename, res, controller }));
+        await runLimitedMp4Normalization(() => streamMp4WithDownloadCreationTime({
+          upstream, filename, res, controller, telemetry: transfer, transferStartedAt
+        }));
         appendHistory({
           kind: 'remote-download', ok: true, durationMs: Date.now() - started, processDurationMs: Date.now() - started,
           platform: 'twitter', title: safeDownloadName(resolvedFilename), sourceUrl: effectiveTargetUrl,
-          clientMeta, trigger: clientMeta?.trigger || undefined
+          clientMeta, trigger: clientMeta?.trigger || undefined, transfer
         });
       } finally {
         stopDeadline();
@@ -2091,15 +2265,26 @@ async function streamRemoteDownload({ targetUrl, targetUrls = [], filename, plat
     res.setHeader('Content-Type', contentType);
     const length = upstream.headers.get('content-length');
     if (length) res.setHeader('Content-Length', length);
-    await pipeLimitedResponse(upstream, res, maxRemoteDownloadBytes, controller);
+    await pipeLimitedResponse(upstream, res, maxRemoteDownloadBytes, controller, transfer, transferStartedAt);
     stopDeadline();
     appendHistory({
       kind: 'remote-download', ok: true, durationMs: Date.now() - started, processDurationMs: Date.now() - started,
       platform: String((platform && platform !== 'generic' ? platform : clientMeta?.siteId) || detectPlatform(effectiveTargetUrl).id || 'generic'), title: safeDownloadName(resolvedFilename),
-      sourceUrl: effectiveTargetUrl, clientMeta, trigger: clientMeta?.trigger || undefined
+      sourceUrl: effectiveTargetUrl, clientMeta, trigger: clientMeta?.trigger || undefined, transfer
     });
   } catch (error) {
-    if (throwOnError) throw error;
+    markDownloadErrorTermination(transfer, error);
+    stopDeadline();
+    controller?.abort();
+    const transferSnapshot = snapshotDownloadTelemetry(transfer);
+    if (throwOnError) {
+      error.onepickTransfer = transferSnapshot;
+      throw error;
+    }
+    appendHistory({
+      kind: 'remote-download', ok: false, durationMs: Date.now() - started, processDurationMs: Date.now() - started,
+      platform: platform || undefined, sourceUrl: targetUrl, error: error.message, transfer: transferSnapshot
+    });
     if (res.headersSent) {
       res.destroy(error);
       return;
@@ -2269,7 +2454,9 @@ function shortcutPreferences(body = {}) {
 
 async function sendShortcutDownload({ input, preferences, itemIndex, started, req, res, next }) {
   const clientMeta = parseClientMeta(req.body?.clientMeta || req.query?.clientMeta);
+  const parseStartedAt = performance.now();
   const parsed = await parseMediaWithYoutubeRecovery({ input, preferences });
+  const telemetryContext = { parseMs: performance.now() - parseStartedAt };
   const { item, candidates } = selectShortcutItem(parsed.items, itemIndex);
   if (!item) {
     const error = new Error('没有找到可下载的媒体文件。');
@@ -2320,7 +2507,7 @@ async function sendShortcutDownload({ input, preferences, itemIndex, started, re
     const targetUrl = shortcutUrl.searchParams.get('url') || '';
     const proxyFilename = shortcutUrl.searchParams.get('filename') || filename;
     const proxyPlatform = shortcutUrl.searchParams.get('platform') || item.platform || parsed.platform?.id;
-    await streamRemoteDownload({ targetUrl, filename: proxyFilename, platform: proxyPlatform, req, res, next });
+    await streamRemoteDownload({ targetUrl, filename: proxyFilename, platform: proxyPlatform, req, res, next, telemetryContext });
     return;
   }
 
@@ -2333,7 +2520,7 @@ async function sendShortcutDownload({ input, preferences, itemIndex, started, re
   const candidateUrls = candidateUrlsForItem(item);
   const [targetUrl, ...targetUrls] = candidateUrls;
   if (!targetUrl) throw new Error('没有找到可下载的媒体文件。');
-  await streamRemoteDownload({ targetUrl, targetUrls, filename, platform: item.platform || parsed.platform?.id, req, res, next, throwOnError: true });
+  await streamRemoteDownload({ targetUrl, targetUrls, filename, platform: item.platform || parsed.platform?.id, req, res, next, throwOnError: true, telemetryContext });
 }
 
 app.post('/api/shortcut/download', async (req, res, next) => {
@@ -2346,7 +2533,7 @@ app.post('/api/shortcut/download', async (req, res, next) => {
     }
     await sendShortcutDownload({ input, preferences, itemIndex: req.body?.itemIndex, started, req, res, next });
   } catch (error) {
-    appendHistory({ kind: 'shortcut', ok: false, durationMs: Date.now() - started, sourceUrl: input, error: error.message });
+    appendHistory({ kind: 'shortcut', ok: false, durationMs: Date.now() - started, sourceUrl: input, error: error.message, transfer: error.onepickTransfer });
     next(error);
   }
 });
@@ -2362,7 +2549,7 @@ app.post('/api/shortcut/download-text', async (req, res, next) => {
     }
     await sendShortcutDownload({ input, preferences, itemIndex: req.query?.itemIndex, started, req, res, next });
   } catch (error) {
-    appendHistory({ kind: 'shortcut', ok: false, durationMs: Date.now() - started, sourceUrl: input, error: error.message });
+    appendHistory({ kind: 'shortcut', ok: false, durationMs: Date.now() - started, sourceUrl: input, error: error.message, transfer: error.onepickTransfer });
     next(error);
   }
 });
@@ -2483,7 +2670,7 @@ app.get('/api/shortcut/browser-download', async (req, res, next) => {
     }
     await sendShortcutDownload({ input, preferences, itemIndex: req.query?.itemIndex, started, req, res, next });
   } catch (error) {
-    appendHistory({ kind: 'shortcut', ok: false, durationMs: Date.now() - started, sourceUrl: input, error: error.message });
+    appendHistory({ kind: 'shortcut', ok: false, durationMs: Date.now() - started, sourceUrl: input, error: error.message, transfer: error.onepickTransfer });
     next(error);
   }
 });

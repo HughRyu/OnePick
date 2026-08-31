@@ -80,12 +80,24 @@ function extFromMediaUrl(url = '') {
   return (match?.[1] || 'jpg').toLowerCase() === 'jpeg' ? 'jpg' : (match?.[1] || 'jpg').toLowerCase();
 }
 
+function pickDouyinImageUrlCandidates(image = {}) {
+  const originalUrls = pickUrlCandidates(image?.url_list);
+  const downloadUrls = pickUrlCandidates(image?.download_url_list);
+  const directUrls = pickUrlCandidates(image?.url);
+  // Downloads are capped at five candidates downstream. Preserve one download_url_list
+  // fallback even when Douyin returns five or more original CDN variants.
+  if (originalUrls.length && downloadUrls.length) {
+    return [...originalUrls.slice(0, 4), ...downloadUrls, ...directUrls];
+  }
+  return [...originalUrls, ...downloadUrls, ...directUrls];
+}
+
 export function extractAwemeFromJson(json, { engine = 'douyin-direct' } = {}) {
   const aweme = json?.aweme_detail || json?.aweme || json?.item || json?.data?.aweme_detail || json?.data;
   if (!aweme || typeof aweme !== 'object') return null;
   const title = aweme.desc || aweme.preview_title || aweme.aweme_id || 'douyin-media';
   const images = (Array.isArray(aweme.images) ? aweme.images : Array.isArray(aweme.image_list) ? aweme.image_list : [])
-    .map(image => pickUrlCandidates(image?.download_url_list, image?.url_list, image?.url))
+    .map(image => pickDouyinImageUrlCandidates(image))
     .filter(urls => urls.length);
   if (images.length) {
     return {
