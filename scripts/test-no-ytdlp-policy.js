@@ -10,7 +10,10 @@ const allowed = new Set([
   // iOS/server TikTok support intentionally remains after the desktop userscript integration was removed.
   'tiktok.js',
   'ytdlp-parser.js',
-  'ytdlp-platforms.js'
+  'ytdlp-platforms.js',
+  // Twitter's public syndication/vxtwitter adapters are best-effort; it deliberately
+  // falls back to the maintained yt-dlp Twitter extractor when they return no media.
+  'twitter.js'
 ]);
 const offenders = [];
 for (const name of fs.readdirSync(parserDir)) {

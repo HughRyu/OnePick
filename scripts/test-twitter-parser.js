@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { detectPlatform, listSupportedPlatforms, parseMedia } from '../src/parsers/index.js';
-import { extractTwitterStatusId } from '../src/parsers/twitter.js';
+import { extractTwitterStatusId, parseTwitter } from '../src/parsers/twitter.js';
 
 const tweetUrl = 'https://x.com/example/status/1812345678901234567';
 
@@ -108,6 +108,61 @@ try {
     /syndication: empty media details; vxtwitter: synthetic vxtwitter transport failure/
   );
   assert.equal(noMediaCalls.length, 2, 'empty syndication must try vxtwitter exactly once');
+
+  const ytdlpFallbackCalls = [];
+  globalThis.fetch = async (url, options = {}) => {
+    const target = String(url);
+    ytdlpFallbackCalls.push({ target, options });
+    if (/cdn\.syndication\.twimg\.com\/tweet-result/.test(target)) {
+      return new Response(JSON.stringify({ id_str: '1812345678901234567', text: 'No direct media', mediaDetails: [] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      });
+    }
+    if (/api\.vxtwitter\.com\/example\/status\/1812345678901234567/.test(target)) {
+      return new Response('<html>upstream error page</html>', { status: 200, headers: { 'content-type': 'text/html' } });
+    }
+    throw new Error(`unexpected fetch target: ${target}`);
+  };
+
+  let fallbackUrl = '';
+  let fallbackArgs = [];
+  const parseYtDlp = async (candidateUrl, args, _preferences, platformId) => {
+    fallbackUrl = candidateUrl;
+    fallbackArgs = args;
+    assert.equal(platformId, 'twitter');
+    return {
+      engine: 'yt-dlp',
+      title: 'yt-dlp fallback',
+      author: 'example',
+      cover: '',
+      duration: null,
+      webpageUrl: candidateUrl,
+      items: [{
+        type: 'video',
+        url: 'https://video.twimg.com/ytdlp-fallback.mp4',
+        filename: 'yt-dlp-fallback.mp4',
+        ext: 'mp4',
+        formatId: 'fallback',
+        quality: '720p'
+      }]
+    };
+  };
+  const ytdlpFallback = await parseTwitter({
+    url: tweetUrl,
+    platform: detectPlatform(tweetUrl),
+    preferences: { mode: 'video', quality: 'best' },
+    parseYtDlp: parseYtDlp
+  });
+  assert.equal(ytdlpFallback.engine, 'yt-dlp', 'both public metadata adapters failing must fall back to yt-dlp');
+  assert.match(ytdlpFallback.items[0].url, /^\/api\/ytdlp-download\?/, 'yt-dlp fallback media must use the yt-dlp download route, not a direct CDN fetch');
+  const fallbackDownloadUrl = new URL(ytdlpFallback.items[0].url, 'http://127.0.0.1');
+  assert.equal(fallbackDownloadUrl.searchParams.get('source'), tweetUrl, 'yt-dlp fallback download route must preserve the original status URL');
+  assert.equal(fallbackDownloadUrl.searchParams.get('mode'), 'video');
+  assert.equal(fallbackDownloadUrl.searchParams.get('quality'), 'best');
+  assert.equal(fallbackUrl, tweetUrl, 'yt-dlp fallback must receive the original status URL');
+  assert.equal(fallbackArgs.includes('--cookies'), false, 'anonymous fallback parsing must not pass X cookies to yt-dlp');
+  assert.equal(ytdlpFallbackCalls.length, 2, 'dedicated adapters must be tried before yt-dlp fallback');
 
   await assert.rejects(
     () => parseMedia({ input: 'https://x.com/someuser' }),

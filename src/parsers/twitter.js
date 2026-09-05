@@ -1,4 +1,5 @@
-import { buildParseResponse, normalizeParsePreferences } from './shared.js';
+import { buildParseResponse, normalizeParsePreferences, parseWithYtDlp } from './shared.js';
+import { ytdlpExtraArgs } from './ytdlp-platforms.js';
 
 export function extractTwitterStatusId(url = '') {
   const text = String(url || '');
@@ -204,7 +205,7 @@ async function fetchVxTwitterTweet(url, statusId) {
   try { return JSON.parse(text); } catch { throw new Error('vxtwitter did not return JSON'); }
 }
 
-export async function parseTwitter({ url, platform, preferences }) {
+export async function parseTwitter({ url, platform, preferences, parseYtDlp = parseWithYtDlp } = {}) {
   const resolvedPreferences = normalizeParsePreferences(preferences);
   twitterPreferenceError(resolvedPreferences);
   const statusId = extractTwitterStatusId(url);
@@ -240,6 +241,31 @@ export async function parseTwitter({ url, platform, preferences }) {
       parsed = extractVxTwitterDetails(payload, resolvedPreferences);
     } catch (error) {
       syndicationErrors.push(`vxtwitter: ${error.message}`);
+    }
+  }
+
+  if (!parsed?.items.length) {
+    try {
+      // The two anonymous metadata adapters are intentionally best-effort: their
+      // payloads vary by post type, region and upstream availability. yt-dlp's
+      // maintained Twitter extractor is the final parser-stage fallback. It uses
+      // OnePick's configured per-platform proxy chain without passing an X
+      // account Cookie; the returned same-origin download route subsequently
+      // applies the normal authenticated download policy where configured.
+      parsed = await parseYtDlp(url, ytdlpExtraArgs('twitter'), resolvedPreferences, 'twitter');
+      if (parsed?.items?.length) {
+        const filenameFor = (item, index) => item?.filename || `twitter-${index + 1}.${item?.ext || 'mp4'}`;
+        parsed = {
+          ...parsed,
+          items: parsed.items.map((item, index) => ({
+            ...item,
+            sourceUrl: url,
+            url: `/api/ytdlp-download?source=${encodeURIComponent(url)}&filename=${encodeURIComponent(filenameFor(item, index))}&mode=${encodeURIComponent(resolvedPreferences.mode)}&quality=${encodeURIComponent(resolvedPreferences.quality)}`
+          }))
+        };
+      }
+    } catch (error) {
+      syndicationErrors.push(`yt-dlp: ${error.message}`);
     }
   }
 
