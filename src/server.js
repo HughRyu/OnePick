@@ -2407,7 +2407,64 @@ app.post('/api/parse', async (req, res, next) => {
   }
 });
 
+import { shortcutSlideshow, renderSlideshow } from './slideshow.js';
+
 const shortcutSelectionThresholdBytes = 100 * 1024 * 1024;
+
+async function streamShortcutSlideshow({ slideshow, parsed, req, res, started }) {
+  return runLimitedMp4Normalization(async () => {
+    const controller = new AbortController();
+    const stop = createUpstreamDeadline(controller, req, res);
+    let tempDir;
+    try {
+      tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'onepick-slideshow-'));
+      let total = 0;
+      const files = [];
+      if (slideshow.images.length > 50) throw new Error('图文图片数量超限。');
+      for (const [index, item] of [...slideshow.images, slideshow.audio].entries()) {
+        controller.signal.throwIfAborted();
+        const target = path.join(tempDir, `input-${index}`);
+        let downloaded = false;
+        for (const url of candidateUrlsForItem(item).slice(0, 3)) {
+          // Validation and policy failures are deliberately terminal; only transport failures fail over.
+          await assertPublicUrl(url);
+          const platform = enforceDownloadCookieRequirement(url, 'douyin');
+          try {
+            const upstream = await fetchPublicUrl(url, { headers: mediaRequestHeaders(url, platform), signal: controller.signal });
+            if (!upstream.ok) { await upstream.body?.cancel(); continue; }
+            assertContentLength(upstream, Math.min(maxRemoteDownloadBytes, 256 * 1024 * 1024) - total);
+            if (!upstream.body) throw new Error('下载源没有可读内容。');
+            await pipeline(Readable.fromWeb(upstream.body), new Transform({ transform(chunk, _encoding, callback) {
+              total += chunk.length;
+              if (total > Math.min(maxRemoteDownloadBytes, 256 * 1024 * 1024)) return callback(new Error('图文素材超过大小限制。'));
+              callback(null, chunk);
+            } }), fs.createWriteStream(target), { signal: controller.signal });
+            downloaded = true;
+            break;
+          } catch (error) {
+            if (controller.signal.aborted || error.name === 'AbortError' || /大小限制|超限|没有可读内容/.test(error.message)) throw error;
+            try { fs.rmSync(target, { force: true }); } catch {}
+          }
+        }
+        if (!downloaded) throw new Error('图文素材下载失败。');
+        files.push(target);
+      }
+      const result = await renderSlideshow({ images: files.slice(0, -1), audio: files.at(-1), tempDir, signal: controller.signal });
+      const filename = safeDownloadName(`${parsed.title || 'douyin'}-图文.mp4`);
+      res.setHeader('Content-Type', 'video/mp4');
+      res.setHeader('Content-Disposition', contentDisposition(filename));
+      res.setHeader('Content-Length', String(fs.statSync(result.path).size));
+      res.setHeader('Cache-Control', 'private, max-age=0, no-store');
+      res.setHeader('X-OnePick-Creation-Time', result.creationTime);
+      res.setHeader('X-OnePick-Metadata-Normalized', 'creation_time');
+      await pipeLocalFileToResponse(result.path, res, controller);
+      appendHistory({ kind: 'remote-download', ok: true, platform: 'douyin', title: filename, sourceUrl: parsed.sourceUrl, durationMs: Date.now() - started, mediaDuration: result.duration });
+    } finally {
+      stop();
+      if (tempDir) fs.rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+}
 
 function itemQualityScore(item = {}) {
   const quality = Number(String(item.quality || '').match(/\d+/)?.[0] || 0);
@@ -2457,6 +2514,8 @@ async function sendShortcutDownload({ input, preferences, itemIndex, started, re
   const parseStartedAt = performance.now();
   const parsed = await parseMediaWithYoutubeRecovery({ input, preferences });
   const telemetryContext = { parseMs: performance.now() - parseStartedAt };
+  const slideshow = req.path === '/api/shortcut/download' || req.path === '/api/shortcut/download-text' ? shortcutSlideshow(parsed, preferences) : null;
+  if (slideshow && (itemIndex === undefined || itemIndex === null || itemIndex === '')) return streamShortcutSlideshow({ slideshow, parsed, req, res, started });
   const { item, candidates } = selectShortcutItem(parsed.items, itemIndex);
   if (!item) {
     const error = new Error('没有找到可下载的媒体文件。');

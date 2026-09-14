@@ -100,6 +100,26 @@ export function extractAwemeFromJson(json, { engine = 'douyin-direct' } = {}) {
     .map(image => pickDouyinImageUrlCandidates(image))
     .filter(urls => urls.length);
   if (images.length) {
+    // 图文作品也可能挂有独立长音频；图片分支不能提前返回而丢掉 music。
+    const music = aweme.music || aweme.audio || {};
+    const audioUrl = normalizeMediaUrl(pickUrlList(
+      music.play_url,
+      music.play_addr,
+      music.url,
+      music.url_list,
+      aweme.music?.play_url?.url_list
+    ));
+    const audioExt = extFromMediaUrl(audioUrl) === 'jpg' ? 'm4a' : extFromMediaUrl(audioUrl);
+    const audioItem = audioUrl ? {
+      type: 'audio',
+      url: audioUrl,
+      filename: safeFilename(`${title}-音频`, audioExt),
+      ext: audioExt,
+      formatId: engine,
+      duration: music.duration || music.duration_ms ? Math.round(Number(music.duration_ms || music.duration) / (music.duration_ms ? 1000 : 1)) : null,
+      filesize: null,
+      platform: 'douyin'
+    } : null;
     return {
       engine,
       title,
@@ -107,7 +127,7 @@ export function extractAwemeFromJson(json, { engine = 'douyin-direct' } = {}) {
       cover: images[0][0],
       duration: null,
       webpageUrl: aweme.share_url || (aweme.aweme_id ? `https://www.douyin.com/note/${aweme.aweme_id}` : ''),
-      items: images.map((urls, index) => ({
+      items: [...images.map((urls, index) => ({
         type: 'image',
         url: urls[0],
         urlCandidates: urls,
@@ -118,7 +138,7 @@ export function extractAwemeFromJson(json, { engine = 'douyin-direct' } = {}) {
         height: aweme.images?.[index]?.height || aweme.image_list?.[index]?.height || null,
         filesize: null,
         platform: 'douyin'
-      }))
+      })), ...(audioItem ? [audioItem] : [])]
     };
   }
   const video = aweme.video || {};

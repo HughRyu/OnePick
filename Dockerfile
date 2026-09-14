@@ -8,7 +8,7 @@ WORKDIR /app
 ENV NODE_ENV=production
 ENV PORT=3000
 ENV CHROMIUM_PATH=/usr/bin/chromium-browser
-RUN apk add --no-cache python3 py3-pip ffmpeg ca-certificates chromium nss freetype harfbuzz ttf-freefont \
+RUN apk add --no-cache python3 py3-pip ffmpeg util-linux ca-certificates chromium nss freetype harfbuzz ttf-freefont \
   && python3 -m venv /opt/yt-dlp \
   && /opt/yt-dlp/bin/pip install --no-cache-dir 'yt-dlp[default,curl-cffi]' \
   && ln -s /opt/yt-dlp/bin/yt-dlp /usr/local/bin/yt-dlp \

@@ -79,7 +79,7 @@ for (const platformId of YTDLP_PLATFORMS) {
 
 export { extractFirstUrl, detectPlatform };
 
-export async function parseMedia({ input, preferences = {} }) {
+export async function parseMedia({ input, preferences = {} } = {}) {
   const url = extractFirstUrl(input);
   if (!url) {
     const error = new Error('没有识别到有效链接，请粘贴包含 http/https 的作品分享内容。');
