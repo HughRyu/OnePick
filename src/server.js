@@ -19,7 +19,7 @@ import { YTDLP_PLATFORMS, ytdlpDownloadExtraArgs } from './parsers/ytdlp-platfor
 import { readCookieCloudConfig, writeCookieCloudConfig, clearCookieCloudConfig, syncCookieCloudToFiles, buildPlatformDomainMap, fetchCookieCloud, appendCookieSyncAudit, readCookieSyncAudit } from './cookiecloud.js';
 import { promoteYoutubeCandidate, withRuntimeCookieArgs, activeYoutubeMasterPath, inspectYoutubeCookieText, youtubeCookiePaths, YOUTUBE_REQUIRED_COOKIE_NAMES } from './youtube-cookie-store.js';
 import { createYoutubeCredentialRecovery, runWithYoutubeCredentialRecovery } from './youtube-credential-recovery.js';
-import { runWithProxyChain, proxyEntryArgs } from './ytdlp-execution.js';
+import { runWithProxyChain, proxyEntryArgs, execFileUntilClose, downloadDeadlineMs, createDownloadLifecycle } from './ytdlp-execution.js';
 import { mergeCookieCloudSyncState } from './cookiecloud-state.js';
 import { normalizeImportedCookieText } from './cookie-import.js';
 import { candidateUrlsForItem, filenameWithContentType, parseDownloadFallback, serializeDownloadFallback } from './media-download-utils.js';
@@ -1970,10 +1970,11 @@ function ytdlpShortcutFormatSelectorForPlatform(preferences = {}, platformId = '
 
 function ytdlpFileDownloadArgs(sourceUrl = '', preferences = {}, outputTemplate = '', platformId = 'youtube', cookieArgs = null, proxyArgs = null) {
   const prefs = normalizeParsePreferences(preferences);
+  const effectiveCookieArgs = cookieArgs || getCookieDownloadArgs(platformId);
   const args = [
     ...(proxyArgs || getProxyArgs(platformId)),
-    ...(cookieArgs || getCookieDownloadArgs(platformId)),
-    ...ytdlpDownloadExtraArgs(platformId),
+    ...effectiveCookieArgs,
+    ...ytdlpDownloadExtraArgs(platformId, effectiveCookieArgs.length > 0),
     '--no-playlist',
     '--no-warnings',
     '--force-overwrites',
@@ -2004,10 +2005,10 @@ function isGenericYtDlpSource(sourceUrl = '') {
   }
 }
 
-async function ensureIosCompatibleShortcutVideo(inputPath, tempDir) {
-  const { stdout } = await execFileAsync('ffprobe', [
+async function ensureIosCompatibleShortcutVideo(inputPath, tempDir, signal) {
+  const { stdout } = await execFileUntilClose('ffprobe', [
     '-v', 'error', '-show_entries', 'stream=codec_type,codec_name,pix_fmt', '-of', 'json', inputPath
-  ], { cwd: path.join(__dirname, '..'), timeout: 15000, maxBuffer: 256 * 1024 });
+  ], { cwd: path.join(__dirname, '..'), timeout: 15000, maxBuffer: 256 * 1024, signal });
   const streams = JSON.parse(stdout || '{}')?.streams || [];
   const video = streams.find(stream => stream.codec_type === 'video') || {};
   const audio = streams.find(stream => stream.codec_type === 'audio');
@@ -2015,19 +2016,21 @@ async function ensureIosCompatibleShortcutVideo(inputPath, tempDir) {
   const audioCompatible = !audio || audio.codec_name === 'aac';
   if (videoCompatible && audioCompatible) return inputPath;
   const compatiblePath = path.join(tempDir, 'ios-compatible.mp4');
-  await execFileAsync('ffmpeg', [
+  await execFileUntilClose('ffmpeg', [
     '-hide_banner', '-y', '-i', inputPath,
     '-map', '0:v:0', '-map', '0:a?',
     '-c:v', 'libx264', '-preset', 'veryfast', '-crf', '20', '-pix_fmt', 'yuv420p',
     '-c:a', 'aac', '-b:a', '128k', '-movflags', '+faststart',
     compatiblePath
-  ], { cwd: path.join(__dirname, '..'), timeout: 120000, maxBuffer: 2 * 1024 * 1024 });
+  ], { cwd: path.join(__dirname, '..'), timeout: 120000, maxBuffer: 2 * 1024 * 1024, signal });
   return compatiblePath;
 }
 
 // 下载 yt-dlp 源到临时文件，返回 { path, tempDir, extension }。调用方负责 fs.rmSync(tempDir)。
 // stream 下载与 zip 打包共用，保证两条路径行为一致。
-async function downloadYtDlpToFile(sourceUrl, preferences, { iosCompatible = false } = {}) {
+let activeXDownloads = 0;
+async function downloadYtDlpToFile(sourceUrl, preferences, { iosCompatible = false, signal } = {}) {
+  signal?.throwIfAborted();
   await assertPublicUrl(sourceUrl);
   const platform = detectPlatform(sourceUrl);
   const ytdlpPlatformId = YTDLP_PLATFORMS.has(platform.id) ? platform.id : (isGenericYtDlpSource(sourceUrl) ? 'generic' : '');
@@ -2040,23 +2043,32 @@ async function downloadYtDlpToFile(sourceUrl, preferences, { iosCompatible = fal
   const extension = prefs.mode === 'audio' ? 'm4a' : 'mp4';
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), `onepick-${platform.id}-`));
   const outputTemplate = path.join(tempDir, 'download.%(ext)s');
+  const isX = ytdlpPlatformId === 'twitter';
+  let acquired = false;
+  const deadline = Date.now() + downloadDeadlineMs(ytdlpPlatformId);
   try {
+    if (isX) {
+      if (activeXDownloads >= 2) throw Object.assign(new Error('X 下载繁忙，请稍后重试。'), { statusCode: 429 });
+      activeXDownloads++; acquired = true;
+    }
     const proxyPlan = planProxyChain(ytdlpPlatformId);
     const proxyResult = await runWithProxyChain({
       chain: proxyPlan.chain,
-      isRetriable: error => isProxyFailoverError(ytdlpPlatformId, String(error?.stderr || error?.message || error || '')),
+      isRetriable: error => !signal?.aborted && !error.onepickTerminationReason && Date.now() < deadline && isProxyFailoverError(ytdlpPlatformId, String(error?.stderr || error?.message || error || '')),
       operation: async proxyEntry => {
-        await withRuntimeCookieArgs(ytdlpPlatformId, cookieArgs => execFileAsync(
+        signal?.throwIfAborted();
+        if (Date.now() >= deadline) throw Object.assign(new Error('yt-dlp download deadline exceeded'), { statusCode: 504, onepickTerminationReason: 'deadline' });
+        await withRuntimeCookieArgs(ytdlpPlatformId, cookieArgs => execFileUntilClose(
           'yt-dlp',
           ytdlpFileDownloadArgs(
             sourceUrl,
             prefs,
             outputTemplate,
             ytdlpPlatformId,
-            ytdlpPlatformId === 'youtube' ? cookieArgs : null,
+            ['youtube', 'twitter'].includes(ytdlpPlatformId) ? cookieArgs : null,
             proxyEntryArgs(proxyEntry)
           ),
-          { cwd: path.join(__dirname, '..'), timeout: 120000, maxBuffer: 1024 * 1024 }
+          { cwd: path.join(__dirname, '..'), timeout: Math.max(1, deadline - Date.now()), maxBuffer: 1024 * 1024, signal }
         ));
         return proxyEntry;
       }
@@ -2077,12 +2089,12 @@ async function downloadYtDlpToFile(sourceUrl, preferences, { iosCompatible = fal
     let streamPath = outputPath;
     if (prefs.mode !== 'audio' && !outputPath.endsWith('.mp4')) {
       const compatiblePath = path.join(tempDir, 'compatible.mp4');
-      await execFileAsync('ffmpeg', [
+      await execFileUntilClose('ffmpeg', [
         '-hide_banner', '-y', '-i', outputPath,
         '-map', '0:v:0', '-map', '0:a?',
         '-c', 'copy', '-movflags', '+faststart',
         compatiblePath
-      ], { cwd: path.join(__dirname, '..'), timeout: 90000, maxBuffer: 2 * 1024 * 1024 });
+      ], { cwd: path.join(__dirname, '..'), timeout: 90000, maxBuffer: 2 * 1024 * 1024, signal });
       streamPath = compatiblePath;
       if (fs.statSync(streamPath).size > maxYtDlpFileBytes) {
         const error = new Error('媒体文件超过大小限制。');
@@ -2093,19 +2105,19 @@ async function downloadYtDlpToFile(sourceUrl, preferences, { iosCompatible = fal
     // iOS Photos requires an actually supported video codec, not merely an MP4 container.
     // Prefer H.264 at selection time and transcode only when a yt-dlp result is still AV1/VP9/etc.
     if (prefs.mode !== 'audio' && iosCompatible) {
-      streamPath = await runLimitedMp4Normalization(() => ensureIosCompatibleShortcutVideo(streamPath, tempDir));
+      streamPath = await runLimitedMp4Normalization(() => ensureIosCompatibleShortcutVideo(streamPath, tempDir, signal));
     }
     if (prefs.mode !== 'audio') {
       const datedPath = path.join(tempDir, 'downloaded-now.mp4');
       const creationTime = new Date().toISOString();
-      await execFileAsync('ffmpeg', [
+      await execFileUntilClose('ffmpeg', [
         '-hide_banner', '-y', '-i', streamPath,
         '-map', '0:v:0', '-map', '0:a?',
         '-c', 'copy', '-map_metadata', '-1',
         '-metadata', `creation_time=${creationTime}`,
         '-movflags', 'use_metadata_tags+faststart',
         datedPath
-      ], { cwd: path.join(__dirname, '..'), timeout: 90000, maxBuffer: 2 * 1024 * 1024 });
+      ], { cwd: path.join(__dirname, '..'), timeout: 90000, maxBuffer: 2 * 1024 * 1024, signal });
       if (fs.statSync(datedPath).size > maxYtDlpFileBytes) {
         const error = new Error('媒体文件超过大小限制。');
         error.statusCode = 413;
@@ -2118,6 +2130,8 @@ async function downloadYtDlpToFile(sourceUrl, preferences, { iosCompatible = fal
     fs.rmSync(tempDir, { recursive: true, force: true });
     if (error.stderr) error.message = error.stderr.split('\n').filter(Boolean).slice(-4).join('\n') || error.message;
     throw error;
+  } finally {
+    if (acquired) activeXDownloads--;
   }
 }
 
@@ -2133,6 +2147,11 @@ async function downloadYtDlpWithYoutubeRecovery(sourceUrl, preferences, options 
 
 async function streamYtDlpDownload({ sourceUrl, filename, preferences, req, res, next, iosCompatible = false }) {
   const started = Date.now();
+  const lifecycle = createDownloadLifecycle(req, res, 600000);
+  const transferId = crypto.randomUUID();
+  let termination = 'upstream-error';
+  const log = event => console.info(JSON.stringify({ kind: 'ytdlp-transfer', transferId, event, elapsedMs: Date.now() - started, ...(event === 'termination' ? { reason: termination } : {}) }));
+  log('start');
   try {
     if (!sourceUrl) {
       const error = new Error('缺少 source 参数。');
@@ -2143,28 +2162,37 @@ async function streamYtDlpDownload({ sourceUrl, filename, preferences, req, res,
     const platform = detectPlatform(sourceUrl);
     const extension = prefs.mode === 'audio' ? 'm4a' : 'mp4';
     const safeFilename = safeDownloadName(filename || `${platform.id}-${Date.now()}.${extension}`).replace(/\.[^.]+$/, `.${extension}`);
-    const { path: streamPath, tempDir } = await downloadYtDlpWithYoutubeRecovery(sourceUrl, prefs, { iosCompatible });
+    const { path: streamPath, tempDir } = await downloadYtDlpWithYoutubeRecovery(sourceUrl, prefs, { iosCompatible, signal: lifecycle.signal });
     try {
+      lifecycle.signal.throwIfAborted();
+      log('ready');
       res.setHeader('Content-Type', prefs.mode === 'audio' ? 'audio/mp4' : 'video/mp4');
       res.setHeader('Content-Length', String(fs.statSync(streamPath).size));
       res.setHeader('Content-Disposition', contentDisposition(safeFilename));
       res.setHeader('Cache-Control', 'private, max-age=0, no-store');
       if (prefs.mode !== 'audio') res.setHeader('X-OnePick-Creation-Time', 'download-time');
-      await pipeline(fs.createReadStream(streamPath), res);
+      await pipeline(fs.createReadStream(streamPath), res, { signal: lifecycle.signal });
+      termination = 'completed';
       const clientMeta = parseClientMeta(req.query?.clientMeta);
     appendHistory({ kind: 'ytdlp', ok: true, durationMs: Date.now() - started, processDurationMs: Date.now() - started, mediaDuration: Number(req.query?.mediaDuration || 0) || null, platform: platform.id, title: safeFilename, sourceUrl, clientMeta, videoId: clientMeta?.videoId || facebookVideoIdFromAny(sourceUrl) || undefined, quality: String(req.query?.quality || clientMeta?.qualityPreference || '') || undefined, trigger: clientMeta?.trigger || undefined });
     } finally {
       fs.rmSync(tempDir, { recursive: true, force: true });
     }
   } catch (error) {
+    termination = lifecycle.signal.reason?.onepickTerminationReason || error.onepickTerminationReason || (error.statusCode === 413 ? 'size-limit' : 'upstream-error');
+    if (lifecycle.signal.aborted) error = lifecycle.signal.reason;
     let failedPlatform = '';
     try { failedPlatform = detectPlatform(sourceUrl).id; } catch {}
     appendHistory({ kind: 'ytdlp', ok: false, durationMs: Date.now() - started, processDurationMs: Date.now() - started, platform: failedPlatform || undefined, sourceUrl, error: error.message });
+    if (res.destroyed) return;
     if (res.headersSent) {
       res.destroy(error);
       return;
     }
     next(error);
+  } finally {
+    lifecycle.stop();
+    log('termination');
   }
 }
 

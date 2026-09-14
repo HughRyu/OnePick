@@ -1,5 +1,6 @@
 import { buildParseResponse, normalizeParsePreferences, parseWithYtDlp } from './shared.js';
-import { ytdlpExtraArgs } from './ytdlp-platforms.js';
+import { ytdlpDownloadExtraArgs } from './ytdlp-platforms.js';
+import { withRuntimeCookieArgs } from '../youtube-cookie-store.js';
 
 export function extractTwitterStatusId(url = '') {
   const text = String(url || '');
@@ -162,7 +163,7 @@ function extractVxTwitterDetails(payload = {}, preferences = {}) {
 function twitterDiagnosticHint(message = '') {
   const text = String(message || '');
   if (/login|sign in|authentication|unauthorized|forbidden|private|protected|not authorized|HTTP 401|HTTP 403/i.test(text)) {
-    return 'X/Twitter 专用解析只访问公开媒体接口；请确认推文公开可访问，且代理出口未被 X 风控。';
+    return 'X/Twitter 会先尝试匿名媒体接口，再使用已配置的 Cookie 访问原生接口；请检查登录态、账户访问权限及代理出口。';
   }
   if (/not found|404|unavailable|does not exist|No video|empty/i.test(text)) {
     return '请确认这是包含视频或图片的公开推文链接，不是用户主页、已删除推文或私密/受保护内容。';
@@ -226,6 +227,7 @@ export async function parseTwitter({ url, platform, preferences, parseYtDlp = pa
   }
 
   const syndicationErrors = [];
+  let anonymous = true;
   let parsed = null;
   try {
     const payload = await fetchSyndicationTweet(statusId);
@@ -246,13 +248,16 @@ export async function parseTwitter({ url, platform, preferences, parseYtDlp = pa
 
   if (!parsed?.items.length) {
     try {
-      // The two anonymous metadata adapters are intentionally best-effort: their
-      // payloads vary by post type, region and upstream availability. yt-dlp's
-      // maintained Twitter extractor is the final parser-stage fallback. It uses
-      // OnePick's configured per-platform proxy chain without passing an X
-      // account Cookie; the returned same-origin download route subsequently
-      // applies the normal authenticated download policy where configured.
-      parsed = await parseYtDlp(url, ytdlpExtraArgs('twitter'), resolvedPreferences, 'twitter');
+      // Existing account cookies are confined to yt-dlp's domain-scoped jar;
+      // neither anonymous adapter receives them. Use a disposable copy because
+      // yt-dlp writes its cookie jar on exit. Explicit graphql is essential:
+      // api=syndication overwrites even a successful authenticated GraphQL result.
+      await withRuntimeCookieArgs('twitter', async cookieArgs => {
+        const args = [...ytdlpDownloadExtraArgs('twitter', cookieArgs.length > 0), ...cookieArgs];
+        parsed = await parseYtDlp(url, args, resolvedPreferences, 'twitter');
+        if (parsed?.items?.length) anonymous = !cookieArgs.length;
+      });
+
       if (parsed?.items?.length) {
         const filenameFor = (item, index) => item?.filename || `twitter-${index + 1}.${item?.ext || 'mp4'}`;
         parsed = {
@@ -281,7 +286,7 @@ export async function parseTwitter({ url, platform, preferences, parseYtDlp = pa
     platform,
     sourceUrl: url,
     resolvedUrl: url,
-    extra: { statusId, parser: 'twitter', anonymous: true }
+    extra: { statusId, parser: 'twitter', anonymous }
   });
 }
 

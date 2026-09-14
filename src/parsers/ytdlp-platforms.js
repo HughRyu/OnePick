@@ -54,8 +54,12 @@ export function ytdlpExtraArgs(platformId = '') {
 }
 
 // 下载时（server.js）用：同上但供 file-download 复用
-export function ytdlpDownloadExtraArgs(platformId = '') {
-  return ytdlpExtraArgs(platformId);
+export function ytdlpDownloadExtraArgs(platformId = '', hasCookies = false) {
+  // Only replace the specific extractor option; preserve unrelated flags/values.
+  const args = ytdlpExtraArgs(platformId);
+  return args.map((value, index) => platformId === 'twitter' && hasCookies
+    && args[index - 1] === '--extractor-args' && value === 'twitter:api=syndication'
+    ? 'twitter:api=graphql' : value);
 }
 
 // 所有走 yt-dlp 的平台 id 集合（快手也接，yt-dlp 无 extractor 会 fail 但走统一错误提示）

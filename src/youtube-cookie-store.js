@@ -143,11 +143,22 @@ export async function promoteYoutubeCandidate(content, {
 export async function withRuntimeCookieArgs(platformId, callback, {
   cookieDir = process.env.COOKIE_DIR || '/app/cookies'
 } = {}) {
-  if (String(platformId) !== 'youtube') return callback([], '');
-  const master = activeYoutubeMasterPath(cookieDir);
-  if (!master) return callback([], '');
-  const masterContent = fs.readFileSync(master, 'utf8');
-  const runtimeDir = fs.mkdtempSync(path.join(os.tmpdir(), 'onepick-youtube-cookie-'));
+  if (!['youtube', 'twitter'].includes(String(platformId))) return callback([], '');
+  const master = platformId === 'youtube' ? activeYoutubeMasterPath(cookieDir) : path.join(cookieDir, 'twitter.txt');
+  if (!master || !fs.existsSync(master)) return callback([], '');
+  let masterContent = fs.readFileSync(master, 'utf8');
+  if (platformId === 'twitter') {
+    // Do not copy credentials for CDN, mirror, or unrelated domains.
+    const rows = masterContent.split(/\r?\n/).filter(line => {
+      if (line.startsWith('#') && !line.startsWith('#HttpOnly_')) return false;
+      const fields = line.replace(/^#HttpOnly_/, '').split('\t');
+      const domain = fields[0].replace(/^\./, '').toLowerCase();
+      return fields.length === 7 && /^(?:[a-z0-9-]+\.)*(?:x|twitter)\.com$/.test(domain);
+    });
+    if (!rows.length) return callback([], '');
+    masterContent = '# Netscape HTTP Cookie File\n' + rows.join('\n') + '\n';
+  }
+  const runtimeDir = fs.mkdtempSync(path.join(os.tmpdir(), `onepick-${platformId}-cookie-`));
   const runtimePath = path.join(runtimeDir, 'cookies.txt');
   try {
     fs.writeFileSync(runtimePath, masterContent, { mode: 0o600 });

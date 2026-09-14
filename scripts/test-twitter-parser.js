@@ -3,7 +3,10 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { detectPlatform, listSupportedPlatforms, parseMedia } from '../src/parsers/index.js';
+import { ytdlpDownloadExtraArgs } from '../src/parsers/ytdlp-platforms.js';
 import { extractTwitterStatusId, parseTwitter } from '../src/parsers/twitter.js';
+assert.ok(ytdlpDownloadExtraArgs('twitter').includes('twitter:api=syndication'), 'anonymous download retains syndication');
+assert.ok(ytdlpDownloadExtraArgs('twitter', true).includes('twitter:api=graphql'), 'authenticated download uses GraphQL');
 
 const tweetUrl = 'https://x.com/example/status/1812345678901234567';
 
@@ -161,7 +164,12 @@ try {
   assert.equal(fallbackDownloadUrl.searchParams.get('mode'), 'video');
   assert.equal(fallbackDownloadUrl.searchParams.get('quality'), 'best');
   assert.equal(fallbackUrl, tweetUrl, 'yt-dlp fallback must receive the original status URL');
-  assert.equal(fallbackArgs.includes('--cookies'), false, 'anonymous fallback parsing must not pass X cookies to yt-dlp');
+  assert.equal(fallbackArgs.includes('--cookies'), true, 'native fallback must use existing authorized cookies');
+  assert.ok(fallbackArgs.includes('twitter:api=graphql'), 'authenticated metadata must not be overwritten by syndication');
+  assert.equal(ytdlpFallback.anonymous, false);
+  assert.notEqual(fallbackArgs[fallbackArgs.indexOf('--cookies') + 1], path.join(cookieRoot, 'twitter.txt'), 'yt-dlp must only write a disposable cookie copy');
+  assert.equal(fs.existsSync(fallbackArgs[fallbackArgs.indexOf('--cookies') + 1]), false, 'runtime cookies must be removed');
+  for (const call of ytdlpFallbackCalls) assert.equal('Cookie' in (call.options.headers || {}), false);
   assert.equal(ytdlpFallbackCalls.length, 2, 'dedicated adapters must be tried before yt-dlp fallback');
 
   await assert.rejects(
